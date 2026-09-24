@@ -15,11 +15,18 @@
 #include <cmath>
 #include <vector>
 #include <string>
+#include <mutex>
 #include <streambuf>
 
 // Global log buffer — accessed by InputState (copy snapshot each frame) and
 // written to by LogCapture (which intercepts std::cerr).
 std::vector<std::string> g_logBuffer;
+std::mutex g_logMutex;
+
+std::vector<std::string> logSnapshot() {
+    std::lock_guard<std::mutex> lk(g_logMutex);
+    return g_logBuffer;
+}
 
 // ---------------------------------------------------------------------------
 // LogCapture — redirects std::cerr through a streambuf that splits on '\n'
@@ -36,17 +43,30 @@ LogCapture::~LogCapture() {
     std::cerr.rdbuf(original);
 }
 
-int LogCapture::overflow(int c) {
+// Loader threads log too, so every write goes through g_logMutex.
+void LogCapture::putChar(char c) {
     if (c == '\n') {
         captured->push_back(line);
         if (captured->size() > 200) captured->erase(captured->begin());
-        original->sputn(line.c_str(), line.size());
+        original->sputn(line.c_str(), static_cast<std::streamsize>(line.size()));
         original->sputn("\n", 1);
         line.clear();
     } else if (c != '\r') {
-        line += static_cast<char>(c);
+        line += c;
     }
+}
+
+int LogCapture::overflow(int c) {
+    if (c == traits_type::eof()) return traits_type::not_eof(c);
+    std::lock_guard<std::mutex> lk(g_logMutex);
+    putChar(static_cast<char>(c));
     return c;
+}
+
+std::streamsize LogCapture::xsputn(const char* s, std::streamsize n) {
+    std::lock_guard<std::mutex> lk(g_logMutex);
+    for (std::streamsize i = 0; i < n; ++i) putChar(s[i]);
+    return n;
 }
 
 // ---------------------------------------------------------------------------

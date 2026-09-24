@@ -21,7 +21,7 @@
 //     boundary residual documented in dem_tess_mesh.h's header banner)
 //   - Heightmap texture bandwidth at high tessellation factors
 #include "dem_tess_mesh.h"
-#include "dem_mesh.h"   // shared readDEMElevations()
+#include "dem_io.h"
 #include "geotiff.h"
 // GLFW/OpenGL headers now come from dem_tess_mesh.h -> gl_platform.h (see
 // that file for why this used to be a fragile per-file ad-hoc block, and
@@ -134,7 +134,6 @@ bool demTessSupported() {
 bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
                               double angleThresholdDeg, int maxLevelParam,
                               const std::atomic<bool>* cancelFlag) {
-    sourcePath = path; // kept for increaseHeightmapResolution()'s reload
     collapseAngleDeg = angleThresholdDeg;
     maxLevel = maxLevelParam;
     orthoUsable = true; // reset each load — this object can be reloaded with
@@ -1060,22 +1059,13 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
 
     glBindVertexArray(0);
 
-    // --- Heightmap texture: initial upload, capped at MAX_HEIGHTMAP_TEXELS.
-    // See uploadHeightmapTexture() and increaseHeightmapResolution() below
-    // for the reload-on-demand mechanism that lets density (S/F) requests
-    // beyond what this initial cap can represent actually fetch more real
-    // detail from disk, instead of just re-tessellating an unchanged,
-    // already-downsampled texture (which adds no new information — see
-    // the F-key handling in main.cpp and design doc §6 for the reasoning).
+    // --- Heightmap texture, capped at MAX_HEIGHTMAP_TEXELS.
     if (!uploadHeightmapTexture(heightmapGLSpace, heightmapSrcW, heightmapSrcH,
                                 MAX_HEIGHTMAP_TEXELS)) {
         return false;
     }
 
-    // Heightmap no longer needed on the CPU after upload — reload (if
-    // ever needed) re-reads from disk via increaseHeightmapResolution()
-    // rather than keeping a second full-resolution copy resident in RAM
-    // for the whole session just in case it's wanted later.
+    // Not needed on the CPU after upload; rebuilds re-read the file.
     heightmapGLSpace.clear();
     heightmapGLSpace.shrink_to_fit();
 
@@ -1086,12 +1076,17 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
     // in dem_tess_mesh.h for why an orthophoto whose own geo metadata says
     // it doesn't overlap the DEM should render untextured (elevation
     // ramp), not stretched to fit anyway. ---
-    if (ortho && !ortho->pixels.empty() && orthoUsable) {
+    if (!orthoUsable && colorTex) {
+        glDeleteTextures(1, &colorTex);
+        colorTex = 0;
+    }
+    if (ortho && !ortho->pixels.empty() && orthoUsable && colorTex == 0) {
         glGenTextures(1, &colorTex);
         glBindTexture(GL_TEXTURE_2D, colorTex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, ortho->width, ortho->height, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, ortho->pixels.data());
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -1112,11 +1107,7 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
 // DEMTessMesh::uploadHeightmapTexture — downsample (box filter, fractional
 // mapping — NOT naive integer stride, see specs.md §6.3 for why that
 // matters) to capTexels if needed, then upload as a single-channel float
-// texture. Shared by uploadGPU() (initial load) and
-// increaseHeightmapResolution() (reload-on-demand, below) so both paths
-// use identical downsample/upload logic. Deletes any previously-uploaded
-// heightmapTex first, so this is also how a reload replaces the texture
-// in place.
+// texture. Deletes any previously-uploaded heightmapTex first.
 // ---------------------------------------------------------------------------
 bool DEMTessMesh::uploadHeightmapTexture(const std::vector<float>& glSpaceData,
                                          int srcW, int srcH, int capTexels) {
@@ -1179,110 +1170,7 @@ bool DEMTessMesh::uploadHeightmapTexture(const std::vector<float>& glSpaceData,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    heightmapCapTexels = capTexels;
-    heightmapIsNative = (static_cast<int64_t>(srcW) * srcH <= capTexels);
     return true;
-}
-
-// ---------------------------------------------------------------------------
-// DEMTessMesh::increaseHeightmapResolution — reload-on-demand. Per the
-// user request this implements: cranking up GPU tessellation density
-// (S/F keys) on a heightmap texture that's already been downsampled adds
-// no real information — it just smoothly interpolates data that was
-// already thrown away at load time (see the design doc and the header
-// banner's "far too important... not adapted to the underlying geotiff"
-// discussion this was written in response to). So instead of only turning
-// the tessellation-density knob, main.cpp calls this on every F (density
-// increase) press while in the DEM-tessellation path: it re-reads the
-// SOURCE FILE FROM DISK (not a cached in-memory copy — see uploadGPU()'s
-// comment for why the full-resolution CPU array isn't kept resident) and
-// doubles the effective heightmap resolution cap, up to the DEM's true
-// native resolution, at which point this becomes a no-op (there's no more
-// real detail to unlock, and further density increases correctly fall
-// back to being purely a GPU-tessellation-density question).
-//
-// Geometry (patch positions/normals/UVs) is untouched — only the
-// heightmap texture the displacement pass samples changes. Returns true
-// if resolution actually increased (false if already native, or on I/O
-// failure — logged either way).
-// ---------------------------------------------------------------------------
-bool DEMTessMesh::increaseHeightmapResolution() {
-    if (!valid) return false;
-    if (heightmapIsNative) return false;       // nothing more to unlock
-    if (heightmapAtSafetyCeiling) return false; // already refused once, don't re-read the file for no gain
-
-    // Synchronous — will hitch the frame briefly on a large DEM, same
-    // tradeoff the rest of this codebase's DEM loading already makes
-    // (unlike copc_streamer.cpp's async tile loading, DEMMesh/DEMTessMesh
-    // loading has always been a single blocking call; this reuses that
-    // same model rather than introducing a second, different threading
-    // approach just for this one path).
-    TIFF* tif = TIFFOpen(sourcePath.c_str(), "r");
-    if (!tif) {
-        std::cerr << "ERROR: could not reopen DEM for higher-resolution reload: "
-                  << sourcePath << std::endl;
-        return false;
-    }
-    uint32_t w = 0, h = 0;
-    TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &w);
-    TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
-    std::vector<float> freshElevs;
-    uint16_t spp = 1;
-    bool ok = readDEMElevations(tif, w, h, freshElevs, spp);
-    float declaredNodata = 0.0f;
-    bool hasDeclaredNodata = ok && readDEMNodataValue(tif, declaredNodata);
-    TIFFClose(tif);
-    if (!ok || freshElevs.empty()) {
-        std::cerr << "ERROR: could not re-read DEM elevations for reload" << std::endl;
-        return false;
-    }
-    auto isNodataValue = [&](float v) -> bool {
-        if (hasDeclaredNodata) {
-            float tol = 1e-3f * std::max(1.0f, std::abs(declaredNodata));
-            return std::abs(v - declaredNodata) < tol;
-        }
-        return v < -9000.0f;
-    };
-
-    int64_t nativeTexels = static_cast<int64_t>(w) * h;
-    // Hard safety ceiling, independent of native resolution: repeated F
-    // presses double the cap each time, and for a very large DEM that
-    // could otherwise grow unboundedly (each doubling roughly doubles
-    // heightmap VRAM usage) before ever reaching native. 16384x16384
-    // (~268M texels, ~1GB at R32F) is a generous but finite stopping
-    // point — not a measured hardware limit, just a line past which
-    // silently ballooning VRAM from key-repeat seems worse than stopping
-    // and telling the user why.
-    const int64_t HARD_CEILING_TEXELS = 16384LL * 16384LL;
-    int64_t newCap = static_cast<int64_t>(heightmapCapTexels) * 2;
-    if (newCap >= nativeTexels) newCap = nativeTexels; // clamp to native, marks heightmapIsNative
-    if (newCap > HARD_CEILING_TEXELS) {
-        newCap = HARD_CEILING_TEXELS;
-        heightmapAtSafetyCeiling = true;
-        std::cerr << "[dem-tess] heightmap resolution capped at a hard safety "
-                     "ceiling (" << HARD_CEILING_TEXELS << " texels) before "
-                     "reaching native — further F presses will have no effect "
-                     "on this DEM." << std::endl;
-    }
-
-    std::vector<float> glSpace(freshElevs.size());
-    double invScale = 1.0 / worldScale; // geometry/worldCenter unchanged by reload
-    for (size_t i = 0; i < freshElevs.size(); ++i) {
-        float e = freshElevs[i];
-        if (isNodataValue(e)) e = 0.0f;
-        glSpace[i] = static_cast<float>((e - worldCenter.z) * invScale);
-    }
-
-    bool uploaded = uploadHeightmapTexture(glSpace, static_cast<int>(w),
-                                           static_cast<int>(h),
-                                           static_cast<int>(newCap));
-    if (uploaded) {
-        std::cerr << "[dem-tess] heightmap reloaded at higher resolution ("
-                  << heightmapCapTexels << " texel cap"
-                  << (heightmapIsNative ? ", now native — no more detail to unlock" : "")
-                  << ")" << std::endl;
-    }
-    return uploaded;
 }
 
 // ---------------------------------------------------------------------------
@@ -1348,53 +1236,22 @@ void DEMTessMesh::render(GLuint tessProgram, const glm::mat4& V, const glm::mat4
     glBindVertexArray(0);
 }
 
-void DEMTessMesh::destroy() {
+void DEMTessMesh::releaseGeometryGL() {
     if (heightmapTex) glDeleteTextures(1, &heightmapTex);
-    if (colorTex) glDeleteTextures(1, &colorTex);
     if (vao) glDeleteVertexArrays(1, &vao);
     if (posVBO) glDeleteBuffers(1, &posVBO);
     if (uvVBO) glDeleteBuffers(1, &uvVBO);
     if (heightUVVBO) glDeleteBuffers(1, &heightUVVBO);
     if (edgeConstraintVBO) glDeleteBuffers(1, &edgeConstraintVBO);
     vao = posVBO = uvVBO = heightUVVBO = edgeConstraintVBO = 0;
-    heightmapTex = colorTex = 0;
+    heightmapTex = 0;
     valid = false;
 }
 
-// ---------------------------------------------------------------------------
-// DEMTessMesh::reload — full rebuild with a new point-collapsing angle
-// (I/O keys, main.cpp). Unlike increaseHeightmapResolution(), the angle
-// changes the CPU-side quadtree subdivision DECISION itself (§4b of the
-// design doc — "collapse this vertex if it's within N° of where the
-// surface would lie without it"), so the whole patch set has to be
-// regenerated, not just the heightmap texture. destroy() first, so
-// uploadGPU()'s unconditional glGenBuffers/glGenVertexArrays calls never
-// leak the previous load's GPU objects.
-// ---------------------------------------------------------------------------
-bool DEMTessMesh::reload(const Orthophoto* ortho, double newAngleThresholdDeg,
-                         int newMaxLevel) {
-    if (sourcePath.empty()) {
-        std::cerr << "ERROR: DEMTessMesh::reload called with no prior sourcePath"
-                  << std::endl;
-        return false;
-    }
-    std::string path = sourcePath; // destroy() doesn't touch it, but be explicit
-    destroy();
-    loaded = false;
-    if (!loadFromDEM(path, ortho, newAngleThresholdDeg, newMaxLevel)) {
-        std::cerr << "ERROR: DEMTessMesh::reload failed to rebuild CPU mesh"
-                  << std::endl;
-        return false;
-    }
-    if (!uploadGPU(ortho)) {
-        std::cerr << "ERROR: DEMTessMesh::reload failed to re-upload GPU resources"
-                  << std::endl;
-        return false;
-    }
-    std::cerr << "[dem-tess] reloaded, collapsing angle = " << newAngleThresholdDeg
-              << "\u00b0, max level = " << newMaxLevel
-              << " (" << patchCount << " patches)" << std::endl;
-    return true;
+void DEMTessMesh::destroy() {
+    releaseGeometryGL();
+    if (colorTex) glDeleteTextures(1, &colorTex);
+    colorTex = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1507,7 +1364,6 @@ bool DEMTessMesh::pollBackgroundBuild(const Orthophoto* ortho) {
             // into this one. GPU-side members (vao, textures, etc.) are
             // deliberately NOT touched here — uploadGPU() below replaces
             // them properly (it already deletes any previous ones first).
-            sourcePath = pending->sourcePath;
             collapseAngleDeg = pending->collapseAngleDeg;
             maxLevel = pending->maxLevel;
             patchPositions = std::move(pending->patchPositions);
@@ -1528,6 +1384,7 @@ bool DEMTessMesh::pollBackgroundBuild(const Orthophoto* ortho) {
             glBBoxMaxY = pending->glBBoxMaxY;
             orthoUsable = pending->orthoUsable;
             loaded = true;
+            releaseGeometryGL();
             swapped = uploadGPU(ortho);
             std::cerr << "[dem-tess] background rebuild SWAPPED IN ("
                       << patchCount << " patches)" << std::endl;

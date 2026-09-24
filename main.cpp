@@ -70,7 +70,6 @@
 #include "src/point_cloud.h"
 #include "src/geotiff.h"
 #include "src/copc_streamer.h"
-#include "src/dem_mesh.h"
 #include "src/dem_tess_mesh.h"
 #include "src/shaders.h"
 #include "src/text_renderer.h"
@@ -190,7 +189,6 @@ int main(int argc, char** argv) {
     PointCloud cloud;
     bool useStreaming = false;
     bool useDEMMesh = false;
-    DEMMesh demMesh;
     Orthophoto demOrthoStorage;
     const Orthophoto* demOrthoForUpload = nullptr;
     TileGrid tileGrid;
@@ -243,18 +241,6 @@ int main(int argc, char** argv) {
             demOrthoStorage = std::move(orthoForMesh);
             demOrthoForUpload = &demOrthoStorage;
         }
-        if (!demMesh.loadFromDEM(demPath, demOrthoForUpload)) return 1;
-
-        cloud.bboxMin = demMesh.bboxMin;
-        cloud.bboxMax = demMesh.bboxMax;
-        cloud.worldCenter = demMesh.worldCenter;
-        cloud.worldScale = demMesh.worldScale;
-        cloud.glBBoxMin = demMesh.glBBoxMin;
-        cloud.glBBoxMax = demMesh.glBBoxMax;
-        cloud.glBBoxMinY = demMesh.glBBoxMinY;
-        cloud.glBBoxMaxY = demMesh.glBBoxMaxY;
-        cloud.glDensity = 1.0f;
-        cloud.pointCount = 0;
         useDEMMesh = true;
     }
 
@@ -361,7 +347,7 @@ int main(int argc, char** argv) {
     InputState input;
     input.camera = &camera;
     input.cloud = &cloud;
-    input.logLines = g_logBuffer;
+    input.logLines = logSnapshot();
     input.zScale = 1.0f;
     int fbW = 0, fbH = 0;
     glfwGetFramebufferSize(window, &fbW, &fbH);
@@ -380,7 +366,6 @@ int main(int argc, char** argv) {
     // Compile shaders (uses the shaders:: namespace helpers).
     GLuint pointProgram = shaders::linkProgram(shaders::kPointCloudVert, shaders::kPointCloudFrag);
     GLuint lineProgram  = shaders::linkProgram(shaders::kLineVert, shaders::kLineFrag);
-    GLuint meshProgram  = shaders::linkProgram(shaders::kMeshVert, shaders::kMeshFrag);
     if (!pointProgram) { glfwTerminate(); return 1; }
 
     // --- GPU-tessellated DEM path (optional; see dem_tess_mesh.h and
@@ -400,89 +385,35 @@ int main(int argc, char** argv) {
     // from. Matches loadFromDEM()'s own defaults.
     const double kDefaultCollapseAngle = 1.0;
     const int kDefaultMaxLevel = 5;
-    if (useDEMMesh && demTessSupported()) {
+    if (useDEMMesh) {
+        if (!demTessSupported()) {
+            std::cerr << "ERROR: DEM rendering needs an OpenGL 4.0+ context" << std::endl;
+            return 1;
+        }
         tessProgram = shaders::linkTessProgram(shaders::kMeshTessVert,
                                                shaders::kMeshTessControl,
                                                shaders::kMeshTessEval,
                                                shaders::kMeshFrag);
-        // Load coarsest first, display it immediately, compute the full
-        // picture in the background — requested directly, and applies
-        // here to the VERY FIRST load, not just later rebuilds. maxLevel=0
-        // (just the initial COARSE grid, no subdivision at all) is always
-        // fast regardless of DEM size, so the window opens showing
-        // something right away instead of blocking on what could be a
-        // genuinely slow bottom-up collapse (§6k of the design doc) at the
-        // real target maxLevel.
-        if (tessProgram &&
-            demTessMesh.loadFromDEM(demPath, demOrthoForUpload,
-                                    kDefaultCollapseAngle, /*maxLevelParam=*/0) &&
-            demTessMesh.uploadGPU(demOrthoForUpload)) {
-            useDEMTess = true;
-            std::cerr << "[dem-tess] using GPU-tessellated DEM path "
-                         "(fast coarse pass shown; full detail building "
-                         "in the background)" << std::endl;
-            demTessMesh.requestBackgroundBuild(demPath, demOrthoForUpload,
-                                               kDefaultCollapseAngle, kDefaultMaxLevel);
-        } else {
-            std::cerr << "[dem-tess] GPU-tessellated DEM setup failed, "
-                         "falling back to CPU mesh (DEMMesh)" << std::endl;
-            if (tessProgram) { glDeleteProgram(tessProgram); tessProgram = 0; }
+        // Show the coarsest level (maxLevel=0, always fast) right away and
+        // build the requested detail in the background.
+        if (!tessProgram ||
+            !demTessMesh.loadFromDEM(demPath, demOrthoForUpload,
+                                     kDefaultCollapseAngle, /*maxLevelParam=*/0) ||
+            !demTessMesh.uploadGPU(demOrthoForUpload)) {
+            std::cerr << "ERROR: DEM mesh setup failed" << std::endl;
+            return 1;
         }
+        useDEMTess = true;
+        demTessMesh.requestBackgroundBuild(demPath, demOrthoForUpload,
+                                           kDefaultCollapseAngle, kDefaultMaxLevel);
+        cloud.bboxMin = demTessMesh.bboxMin;
+        cloud.bboxMax = demTessMesh.bboxMax;
+        cloud.glBBoxMin = demTessMesh.glBBoxMin;
+        cloud.glBBoxMax = demTessMesh.glBBoxMax;
+        cloud.glBBoxMinY = demTessMesh.glBBoxMinY;
+        cloud.glBBoxMaxY = demTessMesh.glBBoxMaxY;
     }
-
-    // S/F now controls demMaxLevel (see gl_app.h) — initialize it to
-    // whichever DEM path actually ended up active's current TARGET depth
-    // (DEMMesh and DEMTessMesh have different defaults, 6 vs 5), so the
-    // first press starts from the real intended value. For DEMTessMesh
-    // specifically this is NOT demTessMesh.maxLevel right now (that's
-    // still 0, the fast coarse pass shown immediately — see above; the
-    // real target is being built in the background and hasn't landed yet).
-    input.demMaxLevel = useDEMTess ? kDefaultMaxLevel : demMesh.maxLevel;
-
-    // Upload DEM orthophoto texture now that the GL context is ready.
-    // The orthophoto is used as a texture whether or not it has GeoTIFF
-    // tags — when it has none, the UV computation in dem_mesh.cpp stretches
-    // it over the DEM extent.
-    //
-    // Skipped entirely when useDEMTess is true: demMesh isn't rendered in
-    // that case (DEMTessMesh already uploaded its own color texture from
-    // the same ortho above), so uploading a second, unused texture here
-    // would just waste GPU memory and upload time.
-    //
-    // Deliberately does NOT free demOrthoStorage.pixels after upload
-    // (previously did) — DEMMesh::reload() and DEMTessMesh::reload() (I/O
-    // keys, point-collapsing angle) both need to re-upload a color
-    // texture from these same pixels on every reload, and re-reading the
-    // orthophoto from disk each time was judged more complexity than the
-    // bounded CPU RAM cost of keeping it resident (it's already capped at
-    // load time by loadTIFF's own downsample logic, geotiff.cpp).
-    if (useDEMMesh && !useDEMTess && demOrthoForUpload && !demOrthoForUpload->pixels.empty()
-        && demMesh.orthoUsable) {
-        demMesh.texture = 0;
-        glGenTextures(1, &demMesh.texture);
-        glBindTexture(GL_TEXTURE_2D, demMesh.texture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
-                     demOrthoForUpload->width, demOrthoForUpload->height, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, demOrthoForUpload->pixels.data());
-        glGenerateMipmap(GL_TEXTURE_2D);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        demMesh.texW = demOrthoForUpload->width;
-        demMesh.texH = demOrthoForUpload->height;
-        std::cerr << "[dem-mesh] texture uploaded: " << demMesh.texW << "x"
-                  << demMesh.texH << " (hasGeo="
-                  << (demOrthoForUpload->hasGeo ? 1 : 0) << ")" << std::endl;
-    } else if (useDEMMesh && !useDEMTess && demOrthoForUpload && !demOrthoForUpload->pixels.empty()
-               && !demMesh.orthoUsable) {
-        std::cerr << "[dem-mesh] orthophoto present but does not overlap this "
-                     "DEM — skipping texture, using elevation color ramp"
-                  << std::endl;
-    } else if (useDEMMesh && !useDEMTess) {
-        std::cerr << "[dem-mesh] no orthophoto texture — using elevation color ramp"
-                  << std::endl;
-    }
+    input.demMaxLevel = kDefaultMaxLevel;
 
     TextRenderer textR;
     textR.init(32);
@@ -601,8 +532,6 @@ int main(int argc, char** argv) {
             if (useDEMTess) {
                 demTessMesh.requestBackgroundBuild(demPath, demOrthoForUpload,
                                                    newAngle, newMaxLevel);
-            } else if (useDEMMesh) {
-                demMesh.reload(demOrthoForUpload, newAngle, newMaxLevel);
             }
         }
 
@@ -630,17 +559,12 @@ int main(int argc, char** argv) {
                                input.viewportH, input.zScale, targetPx,
                                input.useDisplacement, input.showMasterEdges);
             if (input.tessWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-        } else if (useDEMMesh) {
-            if (input.tessWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-            demMesh.render(meshProgram, V, P, input.zScale, input.showMasterEdges);
-            if (input.tessWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         } else if (useStreaming) {
             glm::vec3 camPos = camera.position();
-            double now = glfwGetTime();
-            tileGrid.update(camPos, camera.fov, input.viewportH, now);
+            tileGrid.update(camPos, camera.fov, input.viewportH);
             tileGrid.render(pointProgram, V, P, camPos, camera.fov,
                             input.viewportW, input.viewportH,
-                            input.zScale, input.pointSizeMul, now, input.useOcclusion);
+                            input.zScale, input.pointSizeMul, input.useOcclusion);
         } else {
             glUseProgram(pointProgram);
             glUniformMatrix4fv(glGetUniformLocation(pointProgram, "uView"), 1, GL_FALSE, glm::value_ptr(V));
@@ -667,17 +591,13 @@ int main(int argc, char** argv) {
             double now = glfwGetTime();
             if (now - lastReport >= 1.0) {
                 if (useStreaming) {
-                    int loaded = 0, requested = 0, empty = 0;
+                    int loaded = 0, inFlight = 0;
                     for (auto& t : tileGrid.tiles) {
-                        if (t.state == TileState::LOADED) {
-                            if (t.pointCount > 0) ++loaded; else ++empty;
-                        } else if (t.state == TileState::REQUESTED) ++requested;
+                        if (t.hasGeometry()) ++loaded;
+                        if (t.inFlight) ++inFlight;
                     }
-                    std::cerr << "[stream] " << loaded << " loaded + " << requested
-                              << " refining + " << empty << " empty = "
-                              << loaded + requested + empty << "/"
-                              << tileGrid.gridX * tileGrid.gridY
-                              << " tiles, " << tileGrid.pendingLoads << " pending" << std::endl;
+                    std::cerr << "[stream] " << loaded << "/" << tileGrid.tiles.size()
+                              << " tiles with points, " << inFlight << " loading" << std::endl;
                 } else if (!useDEMMesh) {
                     std::cerr << "[points] sent " << cloud.pointCount << " pts to GPU" << std::endl;
                 }
@@ -717,15 +637,9 @@ int main(int argc, char** argv) {
             glUniformMatrix4fv(glGetUniformLocation(lineProgram, "uProj"), 1, GL_FALSE, glm::value_ptr(P));
             glUniform1f(glGetUniformLocation(lineProgram, "uZScale"), input.zScale);
             for (const auto& t : tileGrid.tiles) {
-                bool isEvicting = (t.state == TileState::EVICTING);
-                if (t.pointCount == 0 && !isEvicting) continue;
-                if (isEvicting) {
-                    glUniform3f(glGetUniformLocation(lineProgram, "uColor"), 1.0f, 0.0f, 0.0f);
-                    glLineWidth(3.0f);
-                } else {
-                    glUniform3f(glGetUniformLocation(lineProgram, "uColor"), 1.0f, 1.0f, 0.0f);
-                    glLineWidth(1.0f);
-                }
+                if (!t.hasGeometry()) continue;
+                if (t.inFlight) glUniform3f(glGetUniformLocation(lineProgram, "uColor"), 1.0f, 0.5f, 0.0f);
+                else            glUniform3f(glGetUniformLocation(lineProgram, "uColor"), 1.0f, 1.0f, 0.0f);
                 float c[8][3] = {
                     {t.glMin.x, t.glMin.y, t.glMin.z}, {t.glMax.x, t.glMin.y, t.glMin.z},
                     {t.glMax.x, t.glMin.y, t.glMax.z}, {t.glMin.x, t.glMin.y, t.glMax.z},
@@ -756,7 +670,7 @@ int main(int argc, char** argv) {
 
         // --- Console log overlay (toggle with L) ---
         if (input.showLog) {
-            input.logLines = g_logBuffer;
+            input.logLines = logSnapshot();
             size_t maxLines = 25;
             size_t startIdx = (input.logLines.size() > maxLines)
                             ? input.logLines.size() - maxLines : 0;
@@ -849,7 +763,6 @@ int main(int argc, char** argv) {
         glfwSwapBuffers(window);
     }
 
-    demMesh.destroy();
     demTessMesh.destroy();
     if (tessProgram) glDeleteProgram(tessProgram);
     textR.destroy();

@@ -1,15 +1,12 @@
-// copc_streamer.cpp — Async COPC tile streaming with distance-based LOD.
+// copc_streamer.cpp — async COPC tile streaming.
 //
-// Implements the entire TileGrid class: init, destructor, uploadTile,
-// desiredResolution, update, render, stop, and the background loader thread
-// (loaderRun). The loader thread uses PDAL to fetch tile sub-bounds at a
-// requested resolution; the main thread drains completed tiles and uploads
-// them to the GPU.
+// A background loader thread turns LoadRequests into LoadResults (PDAL
+// bounds+resolution query, GL-space transform, coloring). The main thread
+// drains results in update(), uploads them, and requests refinements based
+// on each tile's projected on-screen size.
 #include "copc_streamer.h"
 #include "geotiff.h"
 #include "shaders.h"
-// GLFW/OpenGL headers now come from copc_streamer.h -> gl_platform.h (see
-// that file for why this used to be a fragile per-file ad-hoc block).
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -22,26 +19,13 @@
 #include <pdal/Stage.hpp>
 #include <pdal/Dimension.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <sstream>
-#include <cmath>
-#include <algorithm>
-#include <vector>
 #include <string>
-#include <thread>
-#include <atomic>
+#include <vector>
 
-#ifndef LASVIEWER_NO_OPENMP
-#  ifdef _OPENMP
-#    define LASVIEWER_HAS_OPENMP 1
-#  else
-#    define LASVIEWER_HAS_OPENMP 0
-#  endif
-#else
-#  define LASVIEWER_HAS_OPENMP 0
-#endif
-
-// Elevation gradient (shared with point_cloud.cpp / dem_mesh.cpp).
 static glm::vec3 elevationColorRamp(float t) {
     t = glm::clamp(t, 0.0f, 1.0f);
     static const glm::vec3 stops[5] = {
@@ -55,111 +39,103 @@ static glm::vec3 elevationColorRamp(float t) {
 }
 
 // ===========================================================================
-// Background loader thread: pulls requests from the queue, loads via PDAL,
-// and pushes finished tiles to the results queue.
+// Loader thread
 // ===========================================================================
+
+TileGrid::LoadResult TileGrid::loadTile(const LoadRequest& req) const {
+    LoadResult res;
+    res.tileIndex = req.tileIndex;
+    res.resolution = req.resolution;
+
+    pdal::StageFactory factory;
+    std::string driver = factory.inferReaderDriver(copcPath);
+    pdal::Stage* reader = factory.createStage(driver);
+    if (!reader) return res;
+
+    pdal::Options options;
+    options.add("filename", copcPath);
+    std::ostringstream bs;
+    bs.precision(17);
+    bs << "([" << req.minX << "," << req.maxX << "],"
+       << "[" << req.minY << "," << req.maxY << "],"
+       << "[" << req.minZ << "," << req.maxZ << "])";
+    options.add("bounds", bs.str());
+    if (req.resolution > 0) options.add("resolution", req.resolution);
+    reader->setOptions(options);
+
+    pdal::PointTable table;
+    reader->prepare(table);
+    pdal::PointViewSet views = reader->execute(table);
+    bool hasZ = table.layout()->hasDim(pdal::Dimension::Id::Z);
+
+    double zRange = std::max(colorZMax - colorZMin, 1e-6);
+    double invScale = 1.0 / worldScale;
+    for (const auto& view : views) {
+        res.positions.reserve(res.positions.size() + view->size() * 3);
+        res.colors.reserve(res.colors.size() + view->size() * 3);
+        for (pdal::PointId i = 0; i < view->size(); ++i) {
+            double wx = view->getFieldAs<double>(pdal::Dimension::Id::X, i);
+            double wy = view->getFieldAs<double>(pdal::Dimension::Id::Y, i);
+            double wz = hasZ ? view->getFieldAs<double>(pdal::Dimension::Id::Z, i) : 0.0;
+            res.positions.push_back(static_cast<float>((wx - worldCenterX) * invScale));
+            res.positions.push_back(static_cast<float>((wz - worldCenterZ) * invScale));
+            res.positions.push_back(static_cast<float>(-(wy - worldCenterY) * invScale));
+            glm::vec3 c;
+            if (orthoPtr && orthoPtr->hasGeo) {
+                double ocol = (orthoPtr->A != 0) ? (wx - orthoPtr->C) / orthoPtr->A : 0;
+                double orow = (orthoPtr->E != 0) ? (wy - orthoPtr->F) / orthoPtr->E : 0;
+                c = sampleOrthoBilinear(*orthoPtr, ocol, orow);
+            } else {
+                c = elevationColorRamp(static_cast<float>((wz - colorZMin) / zRange));
+            }
+            res.colors.push_back(c.r);
+            res.colors.push_back(c.g);
+            res.colors.push_back(c.b);
+        }
+    }
+    res.ok = true;
+    return res;
+}
 
 void TileGrid::loaderRun() {
     while (true) {
-        Request req;
+        LoadRequest req;
         {
             std::unique_lock<std::mutex> lk(mtx);
-            cv.wait(lk, [&]{ return shutdown || !requests.empty(); });
-            if (shutdown && requests.empty()) return;
+            cv.wait(lk, [&] { return shutdown || !requests.empty(); });
+            if (shutdown) return;
             req = requests.front();
-            requests.pop();
-            req.tile->state = TileState::LOADING;
+            requests.pop_front();
         }
-        // Load via PDAL with bounds + resolution.
+        LoadResult res;
         try {
-            pdal::StageFactory factory;
-            std::string driver = factory.inferReaderDriver(copcPath);
-            pdal::Stage* reader = factory.createStage(driver);
-            if (!reader) { req.tile->state = TileState::FAILED; continue; }
-
-            pdal::Options options;
-            options.add("filename", copcPath);
-            std::ostringstream bs;
-            bs << "([" << req.minX << "," << req.maxX << "],"
-               << "[" << req.minY << "," << req.maxY << "],"
-               << "[" << req.minZ << "," << req.maxZ << "])";
-            options.add("bounds", bs.str());
-            if (req.resolution > 0) {
-                options.add("resolution", req.resolution);
-            }
-            reader->setOptions(options);
-
-            pdal::PointTable table;
-            reader->prepare(table);
-            pdal::PointViewSet views = reader->execute(table);
-            pdal::PointLayoutPtr layout = table.layout();
-            bool hasZ = layout->hasDim(pdal::Dimension::Id::Z);
-
-            std::vector<float> pos, col;
-            float zMin = 1e30f, zMax = -1e30f;
-            for (const auto& view : views) {
-                for (pdal::PointId i = 0; i < view->size(); ++i) {
-                    float z = hasZ ? view->getFieldAs<float>(pdal::Dimension::Id::Z, i) : 0.0f;
-                    if (z < zMin) zMin = z;
-                    if (z > zMax) zMax = z;
-                }
-            }
-            if (zMax - zMin < 1e-6f) zMax = zMin + 1.0f;
-
-            double invScale = 1.0 / worldScale;
-            for (const auto& view : views) {
-                for (pdal::PointId i = 0; i < view->size(); ++i) {
-                    double wx = view->getFieldAs<double>(pdal::Dimension::Id::X, i);
-                    double wy = view->getFieldAs<double>(pdal::Dimension::Id::Y, i);
-                    double wz = hasZ ? view->getFieldAs<double>(pdal::Dimension::Id::Z, i) : 0.0;
-                    pos.push_back(static_cast<float>((wx - worldCenterX) * invScale));
-                    pos.push_back(static_cast<float>((wz - worldCenterZ) * invScale));
-                    pos.push_back(static_cast<float>(-(wy - worldCenterY) * invScale));
-                    glm::vec3 c;
-                    if (orthoPtr && orthoPtr->hasGeo) {
-                        double dx = wx - orthoPtr->C;
-                        double dy = wy - orthoPtr->F;
-                        double ocol = (orthoPtr->A != 0) ? dx / orthoPtr->A : 0;
-                        double orow = (orthoPtr->E != 0) ? dy / orthoPtr->E : 0;
-                        c = sampleOrthoBilinear(*orthoPtr, ocol, orow);
-                    } else {
-                        float t = (static_cast<float>(wz) - zMin) / (zMax - zMin);
-                        c = elevationColorRamp(t);
-                    }
-                    col.push_back(c.r); col.push_back(c.g); col.push_back(c.b);
-                }
-            }
-            req.tile->positions = std::move(pos);
-            req.tile->colors = std::move(col);
-            req.tile->loadedResolution = req.resolution;
-            req.tile->state = TileState::LOADED;
+            res = loadTile(req);
         } catch (const std::exception& e) {
-            std::cerr << "[tile] load failed (" << req.tile->gx << "," << req.tile->gy
-                      << "): " << e.what() << " — retrying at coarser resolution" << std::endl;
-            double retryRes = req.resolution * 2.0;
-            if (retryRes < 50.0) {
-                req.tile->state = TileState::UNLOADED;
-                req.tile->loadedResolution = 0.0f;
-                std::lock_guard<std::mutex> lk(mtx);
-                requests.push({req.tile, retryRes,
-                               req.tile->minX, req.tile->minY, req.tile->minZ,
-                               req.tile->maxX, req.tile->maxY, req.tile->maxZ});
-                req.tile->state = TileState::REQUESTED;
-                cv.notify_one();
-            } else {
-                req.tile->state = TileState::FAILED;
-            }
+            std::cerr << "[tile] load failed (tile " << req.tileIndex << "): " << e.what()
+                      << std::endl;
+            res = LoadResult{};
+            res.tileIndex = req.tileIndex;
+            res.resolution = req.resolution;
         }
-        {
-            std::lock_guard<std::mutex> lk(mtx);
-            results.push(req.tile);
-        }
+        std::lock_guard<std::mutex> lk(mtx);
+        results.push_back(std::move(res));
     }
 }
 
+void TileGrid::requestLoad(int tileIndex, double resolution) {
+    Tile& t = tiles[tileIndex];
+    t.inFlight = true;
+    ++pendingLoads;
+    {
+        std::lock_guard<std::mutex> lk(mtx);
+        requests.push_back({tileIndex, resolution,
+                            t.minX, t.minY, t.minZ, t.maxX, t.maxY, t.maxZ});
+    }
+    cv.notify_one();
+}
+
 // ===========================================================================
-// init: build the tile grid, start the worker thread, and request an initial
-// coarse pass for instant first render.
+// init / stop
 // ===========================================================================
 
 void TileGrid::init(const std::string& copcPath_,
@@ -171,14 +147,15 @@ void TileGrid::init(const std::string& copcPath_,
     worldCenterX = (minX + maxX) * 0.5;
     worldCenterY = (minY + maxY) * 0.5;
     worldCenterZ = (minZ + maxZ) * 0.5;
-    glm::dvec3 diag(maxX - minX, maxY - minY, maxZ - minZ);
-    worldScale = glm::length(diag);
+    worldScale = glm::length(glm::dvec3(maxX - minX, maxY - minY, maxZ - minZ));
     if (worldScale < 1e-9) worldScale = 1.0;
+    colorZMin = minZ;
+    colorZMax = maxZ;
 
     tileW = (maxX - minX) / gridX;
     tileH = (maxY - minY) / gridY;
 
-    tiles.resize(gridX * gridY);
+    tiles.resize(static_cast<size_t>(gridX) * gridY);
     double invScale = 1.0 / worldScale;
     for (int gy = 0; gy < gridY; ++gy) {
         for (int gx = 0; gx < gridX; ++gx) {
@@ -203,69 +180,38 @@ void TileGrid::init(const std::string& copcPath_,
     }
 
     worker = std::thread(&TileGrid::loaderRun, this);
-
-    // Allocate occlusion query objects + reusable proxy VAO. Kept
-    // allocated (unused — see specs.md §5.6) rather than removed, as
-    // documented scaffolding for a future retry of the query-based
-    // approach; Hi-Z (initHiZ(), below) is the actual occlusion
-    // mechanism now in use.
-    occlusionQueries.resize(gridX * gridY);
-    glGenQueries(gridX * gridY, occlusionQueries.data());
-    glGenVertexArrays(1, &occVAO);
-    glGenBuffers(1, &occVBO);
-    glBindVertexArray(occVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, occVBO);
-    glBufferData(GL_ARRAY_BUFFER, 24 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glBindVertexArray(0);
-    occlusionInit = true;
-
     initHiZ();
 
-    // Phase 1: request ALL tiles at a coarse resolution (~500 pts/tile).
-    double tileArea = tileW * tileH;
-    double coarseRes = std::sqrt(tileArea / 500.0);
-    if (coarseRes < 1.0) coarseRes = 1.0;
-    if (coarseRes > 50.0) coarseRes = 50.0;
-    std::cerr << "[stream] Phase 1: coarsest pass (resolution=" << coarseRes
-              << "m, ~500 pts/tile) for " << gridX * gridY << " tiles" << std::endl;
-    for (auto& t : tiles) {
-        std::lock_guard<std::mutex> lk(mtx);
-        requests.push({&t, coarseRes, t.minX, t.minY, t.minZ, t.maxX, t.maxY, t.maxZ});
-        t.state = TileState::REQUESTED;
-        ++pendingLoads;
-        cv.notify_one();
-    }
+    // Coarse first pass: every tile at ~500 points, for a fast first frame.
+    double coarseRes = std::clamp(std::sqrt(tileW * tileH / 500.0), 1.0, 50.0);
+    std::cerr << "[stream] coarse pass (resolution=" << coarseRes << "m) for "
+              << tiles.size() << " tiles" << std::endl;
+    for (size_t i = 0; i < tiles.size(); ++i) requestLoad(static_cast<int>(i), coarseRes);
 }
-
-// ===========================================================================
-// stop: signal shutdown, drain the request queue, join the worker thread.
-// ===========================================================================
 
 void TileGrid::stop() {
     {
         std::lock_guard<std::mutex> lk(mtx);
         shutdown = true;
-        std::queue<Request> empty;
-        std::swap(requests, empty);
+        requests.clear();
     }
-    cv.notify_one();
+    cv.notify_all();
     if (worker.joinable()) worker.join();
-    std::lock_guard<std::mutex> lk(mtx);
-    std::queue<Tile*> emptyResults;
-    std::swap(results, emptyResults);
+    results.clear();
 }
 
 TileGrid::~TileGrid() {
     stop();
-    for (auto& t : tiles) {
-        if (t.vao) glDeleteVertexArrays(1, &t.vao);
-        if (t.vboPos) glDeleteBuffers(1, &t.vboPos);
-        if (t.vboCol) glDeleteBuffers(1, &t.vboCol);
-    }
-    if (occlusionInit) glDeleteQueries(gridX * gridY, occlusionQueries.data());
+    for (auto& t : tiles) releaseTileGL(t);
     destroyHiZ();
+}
+
+void TileGrid::releaseTileGL(Tile& t) {
+    if (t.vao) glDeleteVertexArrays(1, &t.vao);
+    if (t.vboPos) glDeleteBuffers(1, &t.vboPos);
+    if (t.vboCol) glDeleteBuffers(1, &t.vboCol);
+    t.vao = t.vboPos = t.vboCol = 0;
+    t.pointCount = 0;
 }
 
 // ===========================================================================
@@ -274,7 +220,6 @@ TileGrid::~TileGrid() {
 // ===========================================================================
 
 void TileGrid::initHiZ() {
-    hizInitAttempted = true;
     hizCopyProgram = shaders::linkProgram(shaders::kHiZVert, shaders::kHiZCopyFrag);
     hizDownsampleProgram = shaders::linkProgram(shaders::kHiZVert, shaders::kHiZDownsampleFrag);
     if (!hizCopyProgram || !hizDownsampleProgram) {
@@ -528,41 +473,20 @@ void TileGrid::destroyHiZ() {
 }
 
 // ===========================================================================
-// uploadTile: move CPU buffers to the GPU and run a per-tile PCA for
-// density-aware shader subsampling. Called on the main thread.
+// uploadTile: PCA for LOD + GPU upload. Main thread.
 // ===========================================================================
 
-void TileGrid::uploadTile(Tile& t) {
-    if (t.positions.empty()) {
-        t.pointCount = 0;
-        t.state = TileState::LOADED;
-        std::cerr << "[tile] empty tile (" << t.gx << "," << t.gy << ") — 0 points" << std::endl;
-        return;
-    }
-    t.pointCount = static_cast<GLsizei>(t.positions.size() / 3);
-
-    // Recompute Y (elevation) bbox from actual loaded points.
-    float minY = 1e30f, maxY = -1e30f;
-    for (size_t i = 0; i < static_cast<size_t>(t.pointCount); ++i) {
-        float y = t.positions[i * 3 + 1];
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-    }
-    t.glMin.y = minY;
-    t.glMax.y = maxY;
-    t.glCenter = (t.glMin + t.glMax) * 0.5f;
-    t.glRadius = glm::length(t.glMax - t.glMin) * 0.5f;
-
+static void computeTilePCA(Tile& t, const std::vector<float>& pos) {
     // PCA: compute the inertia axes (principal components) of the tile.
     glm::vec3 centroid(0.0f);
     for (size_t i = 0; i < static_cast<size_t>(t.pointCount); ++i) {
-        centroid += glm::vec3(t.positions[i*3], t.positions[i*3+1], t.positions[i*3+2]);
+        centroid += glm::vec3(pos[i*3], pos[i*3+1], pos[i*3+2]);
     }
     centroid /= static_cast<float>(t.pointCount);
 
     float cov[3][3] = {{0,0,0},{0,0,0},{0,0,0}};
     for (size_t i = 0; i < static_cast<size_t>(t.pointCount); ++i) {
-        glm::vec3 p(t.positions[i*3], t.positions[i*3+1], t.positions[i*3+2]);
+        glm::vec3 p(pos[i*3], pos[i*3+1], pos[i*3+2]);
         p -= centroid;
         cov[0][0] += p.x * p.x;
         cov[0][1] += p.x * p.y;
@@ -632,37 +556,53 @@ void TileGrid::uploadTile(Tile& t) {
     float obbVolume = (2.0f * t.obbExtent1) * (2.0f * t.obbExtent2) * (2.0f * t.obbExtent3);
     if (obbVolume < 1e-15f) obbVolume = 1e-15f;
     t.pointSpacing = std::cbrt(obbVolume / static_cast<float>(t.pointCount));
+}
 
-    // Upload to GPU.
+void TileGrid::uploadTile(Tile& t, LoadResult& r) {
+    releaseTileGL(t);
+    t.loadedResolution = static_cast<float>(r.resolution);
+    t.pointCount = static_cast<GLsizei>(r.positions.size() / 3);
+    if (t.pointCount == 0) return;
+
+    // Tighten the vertical bounds to the actual loaded points.
+    float minY = 1e30f, maxY = -1e30f;
+    for (size_t i = 0; i < static_cast<size_t>(t.pointCount); ++i) {
+        minY = std::min(minY, r.positions[i * 3 + 1]);
+        maxY = std::max(maxY, r.positions[i * 3 + 1]);
+    }
+    t.glMin.y = minY;
+    t.glMax.y = maxY;
+    t.glCenter = (t.glMin + t.glMax) * 0.5f;
+    t.glRadius = glm::length(t.glMax - t.glMin) * 0.5f;
+
+    computeTilePCA(t, r.positions);
+
     glGenVertexArrays(1, &t.vao);
     glBindVertexArray(t.vao);
     glGenBuffers(1, &t.vboPos);
     glBindBuffer(GL_ARRAY_BUFFER, t.vboPos);
-    glBufferData(GL_ARRAY_BUFFER, t.positions.size() * sizeof(float),
-                 t.positions.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, r.positions.size() * sizeof(float),
+                 r.positions.data(), GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glGenBuffers(1, &t.vboCol);
     glBindBuffer(GL_ARRAY_BUFFER, t.vboCol);
-    glBufferData(GL_ARRAY_BUFFER, t.colors.size() * sizeof(float),
-                 t.colors.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, r.colors.size() * sizeof(float),
+                 r.colors.data(), GL_STATIC_DRAW);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glBindVertexArray(0);
-    t.positions.clear(); t.positions.shrink_to_fit();
-    t.colors.clear(); t.colors.shrink_to_fit();
 }
 
 // ===========================================================================
-// desiredResolution: compute the PDAL resolution that would give ~1 pt per
-// 5px² at the current camera distance. Returns 0 to skip the tile.
+// desiredResolution: PDAL resolution giving ~1 point per 25 px² of the
+// tile's projected OBB area. Returns 0 to leave the tile as is.
 // ===========================================================================
 
 double TileGrid::desiredResolution(const Tile& t, const glm::vec3& camPos,
                                    float fov, float viewportH) {
-    if (t.pointCount == 0) return 0.0f;
-    float dist = glm::length(t.glCenter - camPos);
-    if (dist < 1e-6f) dist = 1e-6f;
+    if (t.pointCount == 0) return 0.0;
+    float dist = std::max(glm::length(t.glCenter - camPos), 1e-6f);
 
     float pxPerUnit = viewportH / (2.0f * dist * std::tan(glm::radians(fov) * 0.5f));
     glm::vec3 sight = glm::normalize(t.glCenter - camPos);
@@ -673,96 +613,51 @@ double TileGrid::desiredResolution(const Tile& t, const glm::vec3& camPos,
         { t.principalAxis2, 2.0f * t.obbExtent1, 2.0f * t.obbExtent3 },
         { t.principalAxis3, 2.0f * t.obbExtent1, 2.0f * t.obbExtent2 },
     };
-
     float projectedAreaGL = 0.0f;
     for (const auto& f : faces) {
-        float cosAngle = std::abs(glm::dot(f.normal, sight));
-        projectedAreaGL += f.dim1 * f.dim2 * cosAngle;
+        projectedAreaGL += f.dim1 * f.dim2 * std::abs(glm::dot(f.normal, sight));
     }
     float projectedAreaPx = projectedAreaGL * pxPerUnit * pxPerUnit;
-    if (projectedAreaPx < 25.0f) return 0.0f;
+    if (projectedAreaPx < 25.0f) return 0.0;
 
-    float targetPoints = projectedAreaPx / 25.0f;
-    if (targetPoints < 100.0f) targetPoints = 100.0f;
-    if (targetPoints > 500000.0f) targetPoints = 500000.0f;
-
-    double tileAreaM = tileW * tileH;
-    double res = std::sqrt(tileAreaM / targetPoints);
-    if (res < 0.1) res = 0.1;
-    if (res > 50.0) return 0.0f;
-    return res;
+    float targetPoints = std::clamp(projectedAreaPx / 25.0f, 100.0f, 500000.0f);
+    double res = std::sqrt(tileW * tileH / targetPoints);
+    if (res > 50.0) return 0.0;
+    return std::max(res, 0.1);
 }
 
 // ===========================================================================
-// update: drain completed loads, request refinements, evict stale tiles.
+// update: apply finished loads and request refinements. Nothing is evicted:
+// every tile stays resident at its last loaded resolution.
 // ===========================================================================
 
-void TileGrid::update(const glm::vec3& camPos, float fov, float viewportH,
-                      double currentTime) {
-    // 1. Drain completed loads from the worker thread.
-    std::vector<Tile*> completed;
+void TileGrid::update(const glm::vec3& camPos, float fov, float viewportH) {
+    std::deque<LoadResult> done;
     {
         std::lock_guard<std::mutex> lk(mtx);
-        while (!results.empty()) {
-            completed.push_back(results.front());
-            results.pop();
-        }
+        done.swap(results);
     }
-    for (Tile* t : completed) {
-        if (t->state == TileState::LOADED) {
-            if (t->vao) glDeleteVertexArrays(1, &t->vao);
-            if (t->vboPos) glDeleteBuffers(1, &t->vboPos);
-            if (t->vboCol) glDeleteBuffers(1, &t->vboCol);
-            uploadTile(*t);
-        } else if (t->state == TileState::FAILED) {
-            t->state = TileState::UNLOADED;
-            if (pendingLoads < maxConcurrentLoads) {
-                std::lock_guard<std::mutex> lk(mtx);
-                requests.push({t, 10.0, t->minX, t->minY, t->minZ, t->maxX, t->maxY, t->maxZ});
-                t->state = TileState::REQUESTED;
-                ++pendingLoads;
-                cv.notify_one();
-            }
-        }
+    for (LoadResult& r : done) {
+        Tile& t = tiles[r.tileIndex];
+        t.inFlight = false;
         --pendingLoads;
+        if (r.ok) {
+            t.failures = 0;
+            uploadTile(t, r);
+        } else if (++t.failures < 4) {
+            // Retry coarser; a very dense query is the usual failure cause.
+            requestLoad(r.tileIndex, std::min(std::max(r.resolution, 1.0) * 2.0, 50.0));
+        }
     }
 
-    // 2. Re-evaluate ALL tiles against the current camera position.
-    for (auto& t : tiles) {
-        if (pendingLoads >= maxConcurrentLoads) break;
-        if (t.state != TileState::LOADED && t.state != TileState::REQUESTED) continue;
-        if (t.pointCount == 0) continue;
-
+    // Refine tiles whose loaded resolution is too coarse for the current view.
+    for (size_t i = 0; i < tiles.size() && pendingLoads < maxConcurrentLoads; ++i) {
+        Tile& t = tiles[i];
+        if (t.inFlight || t.pointCount == 0 || t.failures > 0) continue;
         double desired = desiredResolution(t, camPos, fov, viewportH);
-        if (desired <= 0.0) continue;
-
-        if (t.loadedResolution > desired * 1.5) {
-            if (t.state == TileState::LOADED) {
-                t.state = TileState::REQUESTED;
-                std::lock_guard<std::mutex> lk(mtx);
-                requests.push({&t, desired, t.minX, t.minY, t.minZ, t.maxX, t.maxY, t.maxZ});
-                ++pendingLoads;
-                cv.notify_one();
-            }
+        if (desired > 0.0 && t.loadedResolution > desired * 1.5) {
+            requestLoad(static_cast<int>(i), desired);
         }
-    }
-
-    // 3. LRU eviction: tiles not used in the last 10s are unloaded.
-    for (auto& t : tiles) {
-        if (t.state != TileState::LOADED) continue;
-        if (currentTime - t.lastUsedTime > 10.0) {
-            t.state = TileState::EVICTING;
-        }
-    }
-    for (auto& t : tiles) {
-        if (t.state != TileState::EVICTING) continue;
-        if (t.vao) glDeleteVertexArrays(1, &t.vao);
-        if (t.vboPos) glDeleteBuffers(1, &t.vboPos);
-        if (t.vboCol) glDeleteBuffers(1, &t.vboCol);
-        t.vao = t.vboPos = t.vboCol = 0;
-        t.pointCount = 0;
-        t.state = TileState::UNLOADED;
-        t.loadedResolution = 0.0f;
     }
 }
 
@@ -772,8 +667,8 @@ void TileGrid::update(const glm::vec3& camPos, float fov, float viewportH,
 
 void TileGrid::render(GLuint pointProgram, const glm::mat4& V, const glm::mat4& P,
                       const glm::vec3& camPos, float fov, float viewportW, float viewportH,
-                      float zScale, float pointSizeMul, double currentTime,
-                      bool useOcclusion) {
+                      float zScale, float pointSizeMul, bool useOcclusion) {
+    (void)camPos;
     glUseProgram(pointProgram);
     glUniformMatrix4fv(glGetUniformLocation(pointProgram, "uView"), 1, GL_FALSE, glm::value_ptr(V));
     glUniformMatrix4fv(glGetUniformLocation(pointProgram, "uProj"), 1, GL_FALSE, glm::value_ptr(P));
@@ -783,57 +678,25 @@ void TileGrid::render(GLuint pointProgram, const glm::mat4& V, const glm::mat4& 
                 std::tan(glm::radians(fov) * 0.5f));
     glUniform1f(glGetUniformLocation(pointProgram, "uDisableSubsampling"), 0.0f);
     glUniform1f(glGetUniformLocation(pointProgram, "uOrtho"), 0.0f);
+    glUniform1f(glGetUniformLocation(pointProgram, "uPointSize"), 0.0015f * pointSizeMul);
+    glUniform1f(glGetUniformLocation(pointProgram, "uTargetPixelSpacing"), 2.83f);
+    glUniform1f(glGetUniformLocation(pointProgram, "uDensityMul"), 1.0f);
+    GLint densityLoc = glGetUniformLocation(pointProgram, "uDensity");
 
     glm::mat4 VP = P * V;
-    size_t drawnTiles = 0, drawnPoints = 0, culledTiles = 0;
-    for (int i = 0; i < gridX * gridY; ++i) {
-        Tile& t = tiles[i];
-        if (t.pointCount == 0) continue;
-        if (t.state != TileState::LOADED && t.state != TileState::REQUESTED) continue;
-
-        t.lastUsedTime = currentTime;
-
-        if (useOcclusion && isTileOccludedByHiZ(t, VP)) {
-            ++culledTiles;
-            continue;
-        }
-
-        float dist = glm::length(t.glCenter - camPos);
-        if (dist < 1e-6f) dist = 1e-6f;
-        glUniform1f(glGetUniformLocation(pointProgram, "uPointSize"),
-                    0.0015f * pointSizeMul);
-        glUniform1f(glGetUniformLocation(pointProgram, "uTargetPixelSpacing"), 2.83f);
+    for (Tile& t : tiles) {
+        if (!t.hasGeometry()) continue;
+        if (useOcclusion && isTileOccludedByHiZ(t, VP)) continue;
         float tileDensity = (t.pointSpacing > 1e-10f)
             ? 1.0f / (t.pointSpacing * t.pointSpacing) : 1e15f;
-        glUniform1f(glGetUniformLocation(pointProgram, "uDensity"), tileDensity);
-        glUniform1f(glGetUniformLocation(pointProgram, "uDensityMul"), 1.0f);
-
+        glUniform1f(densityLoc, tileDensity);
         glBindVertexArray(t.vao);
         glDrawArrays(GL_POINTS, 0, t.pointCount);
-        glBindVertexArray(0);
-        ++drawnTiles;
-        drawnPoints += t.pointCount;
     }
+    glBindVertexArray(0);
 
-    // Build the Hi-Z pyramid from THIS frame's now-rendered depth, for
-    // NEXT frame's isTileOccludedByHiZ() calls above — see the class
-    // comment in copc_streamer.h for why this is deliberately
-    // one-frame-stale rather than tested against itself same-frame
-    // (chicken-and-egg: the tiles just drawn above are the only depth
-    // there is to build from in this mutually-exclusive-with-DEM render
-    // path — see main.cpp).
+    // Build next frame's Hi-Z from this frame's depth.
     if (useOcclusion) {
         captureAndBuildHiZ(static_cast<int>(viewportW), static_cast<int>(viewportH));
-    }
-
-    static double lastReport = 0.0;
-    if (currentTime - lastReport >= 1.0) {
-        int loaded = 0;
-        for (auto& t : tiles) if (t.state == TileState::LOADED) ++loaded;
-        std::cerr << "[stream] drew " << drawnPoints << " pts from " << drawnTiles
-                  << " tiles (" << loaded << "/" << gridX * gridY << " loaded, "
-                  << pendingLoads << " pending, " << culledTiles << " occlusion-culled)"
-                  << std::endl;
-        lastReport = currentTime;
     }
 }

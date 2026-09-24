@@ -106,5 +106,9 @@ struct LogCapture : std::streambuf {
     explicit LogCapture(std::vector<std::string>* cap);
     ~LogCapture() override;
     int overflow(int c) override;
+    std::streamsize xsputn(const char* s, std::streamsize n) override;
+private:
+    void putChar(char c);
 };
 extern std::vector<std::string> g_logBuffer;
+std::vector<std::string> logSnapshot(); // thread-safe copy of the log
