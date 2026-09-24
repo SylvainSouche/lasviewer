@@ -1,0 +1,41 @@
+# Doxyfile — Doxygen configuration for lasviewer
+# Run with: make doc
+
+PROJECT_NAME           = "lasviewer"
+PROJECT_NUMBER         = 0.1.0
+PROJECT_BRIEF          = "Minimal LAZ/LAS + DEM + orthophoto 3D viewer"
+
+INPUT                  = main.cpp src/ tests/ README.md
+RECURSIVE              = YES
+
+OUTPUT_DIRECTORY       = docs
+HTML_OUTPUT            = html
+LATEX_OUTPUT           = latex
+
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+GENERATE_MAN           = NO
+GENERATE_XML           = NO
+
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = YES
+EXTRACT_STATIC         = YES
+
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = YES
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+
+QUIET                  = YES
+
+# Preprocessor definitions (for parsing #if blocks)
+PREDEFINED             = __APPLE__ LASVIEWER_HAS_OPENMP=1
+
+# Search engine
+SEARCHENGINE           = YES
+
+# Graphviz (class diagrams)
+HAVE_DOT               = NO

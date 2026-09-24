@@ -1,0 +1,6 @@
+.build/
+/lasviewer
+/lasviewer-debug
+/lasviewer.tar.gz
+/docs/html/
+.DS_Store

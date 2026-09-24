@@ -1,0 +1,52 @@
+# .clang-format — clang-format configuration for lasviewer
+# Run with: make fmt
+
+BasedOnStyle: LLVM
+
+Language: Cpp
+Standard: c++17
+
+ColumnLimit: 100
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+BreakBeforeBraces: Attach
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortBlocksOnASingleLine: Never
+
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: false
+AlignTrailingComments: true
+AlignEscapedNewlines: Left
+
+SortIncludes: true
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^"pdal/'
+    Priority: 2
+  - Regex: '^<GLFW/'
+    Priority: 3
+  - Regex: '^<OpenGL/'
+    Priority: 3
+  - Regex: '^<glm/'
+    Priority: 3
+  - Regex: '^<tiff'
+    Priority: 3
+  - Regex: '^<.*\..*>'  # system headers with dots (e.g. <iostream>)
+    Priority: 5
+  - Regex: '^<.*>'      # system headers without dots
+    Priority: 4
+  - Regex: '.*'         # local headers
+    Priority: 1
+
+SpaceBeforeParens: ControlStatements
+SpacesBeforeTrailingComments: 2
+
+PointerAlignment: Left
+DerivePointerAlignment: false
+
+ReflowComments: true
