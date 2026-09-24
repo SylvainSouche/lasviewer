@@ -13,7 +13,7 @@ The application is a C/C++ desktop app targeting **macOS** (primary) and **Linux
 Windowing toolkit: **GLFW** (minimal, lightweight, no native widgets required).
 
 ### 1.3
-3D API: **Modern OpenGL 3.3 core profile** (shaders, VBO/VAO, no fixed-function).
+3D API: **modern OpenGL, core profile**. A 4.1 core context is requested first (needed for DEM tessellation), with a fallback to 3.3 core, where point clouds still work and DEM layers are skipped.
 
 ### 1.4
 LAS/LAZ reader: **PDAL** (`readers.copc`, `readers.las`, etc.).
@@ -25,7 +25,7 @@ TIFF/GeoTIFF reader: **libtiff** (with manual GeoTIFF tag reading via `TIFFGetFi
 Math library: **glm** (header-only).
 
 ### 1.6b
-On-screen text (help overlay, console log overlay): **FreeType** (`libfreetype`). A glyph atlas covering ASCII 32–126 is rasterized once at startup and drawn as textured quads via a dedicated text shader. (Earlier iterations used a hand-rolled 5×7 `GL_POINTS` bitmap font; this was replaced with FreeType so the full printable ASCII set renders correctly instead of a hardcoded per-character pixel grid.)
+UI and on-screen text: **Dear ImGui** (v1.91.9b, MIT), vendored in `third_party/imgui` (core + GLFW and OpenGL3 backends). It replaced the FreeType glyph-atlas text renderer, so FreeType is no longer a dependency.
 
 ### 1.7
 Build system: **plain Makefile** with multi-OS detection (MacPorts, Homebrew, Linux system packages).
@@ -47,9 +47,7 @@ OpenMP: enabled by default (`-fopenmp`) for parallel point cloud loading and col
 Load **LAZ/LAS point clouds** via PDAL (supports `.las`, `.laz`, `.copc.laz`).
 
 ### 2.2
-Load **GeoTIFF DEMs / DSMs** (elevation rasters). DEM input is rendered as an **adaptive triangulated mesh**, not a point cloud — see §9.7–9.9. Supported sample formats: Float32/64 and Int16/32/UInt16/Byte via scanline or tile reads (never `TIFFReadRGBAImageOriented`, which corrupts numeric elevation values by routing them through an RGBA decode). Also supports **Terrain RGB** encoding (8-bit, 3+ band, unsigned): `elevation = (R*65536 + G*256 + B) * 0.1 - 10000`, matching IGN's MNS LiDAR HD raster convention; values below -9000 are treated as nodata and clamped to 0.
-
-The LiDAR point-cloud path (§2.1) with orthophoto coloring remains the primary/default workflow; the DEM/DSM mesh path is a parallel, actively-developed alternative for terrain-surface visualization from raster elevation data rather than point clouds.
+Load **GeoTIFF DEMs / DSMs** (elevation rasters). They are rendered as a GPU-tessellated adaptive mesh (§9.7). Supported sample formats: Float32/64 and Int16/32/UInt16/Byte, via scanline or tile reads (never `TIFFReadRGBAImageOriented`, which corrupts numeric elevations). Also supports **Terrain RGB** (8-bit, 3+ bands): `elevation = (R*65536 + G*256 + B) * 0.1 - 10000`, IGN's MNS LiDAR HD convention; values below -9000 are treated as nodata.
 
 ### 2.3
 Load **GeoTIFF orthophotos** (RGB/RGBA) for point cloud colorization. Supports JPEG-compressed and LZW-compressed TIFFs.
@@ -65,26 +63,29 @@ GeoTIFF `ModelPixelScaleTag` stores absolute values. For north-up orthophotos, t
 
 ### 2.7
 Command-line interface:
-- `./lasviewer cloud.laz [ortho.tif]` — bare positional (first = input, second = ortho)
-- `./lasviewer -cop cloud.laz [-o ortho.tif]` — explicit COPC flag
-- `./lasviewer -d dem.tif [-o ortho.tif]` — explicit DEM flag
-- `./lasviewer -h` or `--help` — print usage and exit
-- Bare `.tif` as first positional → treated as DEM; bare `.laz`/`.las` → treated as point cloud
+- `./lasviewer [options] <file>...` loads any number of point clouds and DEMs into one scene.
+- `.las` / `.laz` → point cloud loaded in full; names containing `.copc.` → streamed COPC layer.
+- `.tif` / `.tiff` → classified by content: 8-bit with ≥3 bands is the **orthophoto**; anything else is a **DEM**. More than one orthophoto is an error.
+- `-o ortho.tif` sets the orthophoto; `-d dem.tif` adds a DEM explicitly (required for 8-bit Terrain-RGB DEMs, which look like imagery); `-cop cloud.laz` adds a point cloud explicitly.
+- `--snapshot out.ppm` renders until every layer is idle, writes the frame as a binary PPM, and exits.
+- `-h` / `--help` prints usage and exits.
+- The old forms `lasviewer cloud.laz ortho.tif` and `lasviewer dem.tif ortho.tif` keep working, through the content rule.
 
 ---
 
 ## 3. Coordinate System & Georeferencing
 
 ### 3.1
-Work in the data's native CRS (e.g., Lambert-93 / EPSG:2154). No reprojection.
+Work in the data's native CRS (e.g. Lambert-93 / EPSG:2154). Each input's horizontal EPSG code is read (PDAL spatial reference for clouds, GeoKeyDirectory for rasters), shown in the UI, and a warning is logged when inputs disagree. Only the DEM texture is reprojected (§9.8); point clouds and DEMs are not.
 
 ### 3.2
-World-to-GL transform:
+World-to-GL transform, **shared by every layer of a scene** (`SceneFrame`, `src/scene_frame.h`):
 ```
 GL_X = (worldX - center.x) / scale       ← easting
 GL_Y = (worldZ - center.z) / scale       ← elevation (up)
 GL_Z = -(worldY - center.y) / scale      ← northing (NEGATED for north-up)
 ```
+`SceneFrame::toWorld()` is the inverse (used for picked coordinates and the camera target readout).
 
 ### 3.3
 Z scale defaults to **1.0× (true metric scale)**. The data CRS uses meters for both XY and Z, so 1 unit XY = 1 unit Z. No automatic Z scaling based on terrain type.
@@ -93,7 +94,7 @@ Z scale defaults to **1.0× (true metric scale)**. The data CRS uses meters for 
 Z exaggeration adjustable at runtime: `E` (increase ×1.2), `D` (decrease ÷1.2), `U` (reset to 1.0×). Applied in the vertex shader via `uZScale` uniform.
 
 ### 3.5
-Cloud recentered to GL origin and rescaled by bbox diagonal so it fits in roughly [-1, 1]³.
+The frame is fixed **before any layer loads**, from the union of all inputs' header extents (PDAL `bounds` metadata; GeoTIFF tags for DEMs): `center` = centre of the union, `scale` = its diagonal. DEM elevations aren't known before loading, so a DEM-only scene has `center.z = 0`. The frame also carries the union Z range, used by every point elevation ramp, so all tiles and files map the same elevation to the same color.
 
 ### 3.6
 Orthophoto affine transformed to GL space (including Z negation) for colorization purposes only. The orthophoto quad is NOT rendered as a flat plane (see spec 9.6).
@@ -105,7 +106,7 @@ Orthophoto colorization: each point's world (X, Y) is inverse-transformed throug
 Orthophoto colorization must account for the Z negation: `worldY = -gz × scale + centerY`. The negation is baked into the inverse-affine coefficients (`kColZ`, `kRowZ`).
 
 ### 3.9
-**Coverage gate**: before colorizing, the loader computes the overlap between the orthophoto's extent and the point cloud's XY bbox. If the orthophoto covers less than **25%** of the cloud's area, loading fails with an error (this catches wrong/mismatched ortho files early instead of producing a mostly-gray cloud). Coverage percentage is logged regardless of outcome.
+**Coverage gate** (per point-cloud layer): the orthophoto colors a cloud only if it is georeferenced (tags or `.tfw`), uses the same EPSG code when both are known, and covers at least **25%** of the cloud's XY extent. Otherwise that layer falls back to elevation (or file RGB) colors and a message is logged. Earlier single-file versions aborted instead; with several layers, one uncovered tile must not stop the others. Coverage is logged for every layer.
 
 ---
 
@@ -131,14 +132,14 @@ Target pixel spacing default: **2.83px** (gives ~2× density vs 4px). Adjustable
 Point size adjustable at runtime: `N` (smaller ÷1.3), `M` (bigger ×1.3). Applied via `uPointSize` uniform.
 
 ### 4.6
-`uDisableSubsampling` uniform: when set to 1.0, the shader skips the discard logic entirely (used for help overlay text rendering).
+`uDisableSubsampling` uniform: when set to 1.0, the shader skips the discard logic entirely (currently unused by any layer).
 
 ---
 
 ## 5. Streaming COPC
 
 ### 5.1
-For `.copc.laz` files, use **async tile loading** instead of loading the entire file. A background `TileLoader` thread processes a request queue.
+For `.copc.laz` files, use **async tile loading** instead of loading the whole file. A background loader thread per COPC layer turns immutable `LoadRequest`s (tile index, resolution, bounds) into `LoadResult`s (GL-space positions, elevation colors and, when an orthophoto applies, orthophoto colors). **The main thread owns all `Tile` state**; the loader never touches a `Tile`, so there is no shared mutable state apart from the two mutex-protected queues.
 
 ### 5.2
 **8×8 grid** (64 tiles) dividing the cloud's XY extent. Each tile is a PDAL spatial query with `bounds` + `resolution` options.
@@ -157,19 +158,13 @@ For `.copc.laz` files, use **async tile loading** instead of loading the entire 
 This replaced an earlier, simpler `tileWorldMeters / (tilePixelSize / 3.0)` radius-based formula — the OBB/projected-area approach better matches actual on-screen footprint for elongated or tilted tiles.
 
 ### 5.5
-**LRU eviction**: tiles not used in the last 10 seconds are unloaded (GPU buffers deleted, state reset to UNLOADED).
+No LRU eviction: every tile stays resident at its last loaded resolution. (The previous 10-second eviction never fired, because every tile was drawn and marked "used" each frame.) A memory budget is planned together with octree-based streaming.
 
 ### 5.6
-**Occlusion culling — implemented via Hi-Z (max-mip depth pyramid), replacing the disabled query-based scaffolding.** The original approach (GL occlusion query objects, `glGenQueries`, allocated on init but never issued via `glBeginQuery`/`glEndQuery`) is still allocated — kept as documented scaffolding, not removed — but is not what's actually used: it was tried and caused visible tile flickering, due to occlusion-query result latency (the GPU answer for "was this tile visible" often isn't available until a later frame, so a decision ends up made from a stale answer to a question about a different camera position).
-
-The working mechanism instead: `TileGrid` builds a conservative MAX-reduced depth mip pyramid from each frame's own rendered depth (`captureAndBuildHiZ()` — blit the real depth buffer into a texture, then a fragment-shader copy pass into mip 0 of a `GL_R32F` pyramid, then successive 2×2 max-reduction passes per mip), and uses it on the *next* frame (`isTileOccludedByHiZ()`) to skip tiles whose entire screen footprint is already known to be behind closer geometry. This is deliberately one-frame-stale too, but a fixed, deterministic offset rather than an unbounded, driver-dependent query latency — the only failure mode is a tile that should be visible this frame not being drawn for one frame during fast camera motion, which self-corrects immediately next frame; a tile that's actually occluded being wrongly drawn is not a failure mode at all (just wasted work, same as no culling). Since this app's DEM and point-cloud-streaming render paths are mutually exclusive (only one is ever active — see `main.cpp`), the only thing tiles can occlude here is *other tiles*, not DEM geometry.
-
-Deliberately reads back only a small, fixed-size (~64×64) coarse mip level to the CPU once per frame, rather than a proper GPU-side per-tile test — `TileGrid::render()`'s draw/skip decision already happens on the CPU (a simple loop issuing `glDrawArrays` calls), and a GPU→CPU readback for every one of `gridX*gridY` tiles individually would stall far more than it saves. `InputState::useOcclusion` (default `true`) is the actual, working kill-switch now — no key currently toggles it (`O` remains repurposed to the DEM mesh's point-collapsing angle, §10.1), so it's effectively always on unless changed at the code level.
-
-This was implemented at one point (proxy geometry drawn between begin/end query, tested against the depth buffer) but caused visible tile flickering — occluded tiles toggled visibility frame-to-frame as the 1-frame-latency query result interacted with the streaming refinement logic, and it was removed rather than debugged further at the time. The scaffolding (query objects, proxy VAO, `O` key) was left in place for a future retry rather than torn out. The toggle currently has no visible effect either way.
+**Culling.** Each frame, a tile is skipped if its box (Y scaled by the Z exaggeration) is entirely outside one frustum plane, or if the **scene-wide Hi-Z pyramid** (`HiZ`, `src/hiz.*`) says it is occluded. After all layers have drawn, the viewer max-reduces the frame's depth buffer into an R32F mip pyramid and reads back one small level (~64×64) once per frame. The next frame tests tile boxes against it. Any layer's depth (including DEM meshes) can therefore occlude tiles. The pyramid is one frame stale by design: the only failure mode is a newly revealed tile missing for one frame. It is invalidated on frames where it isn't rebuilt. It can be toggled from the UI ("Occlusion culling").
 
 ### 5.7
-Max **16** concurrent tile loads (`maxConcurrentLoads`). Pending loads tracked; new requests only issued when `pendingLoads < maxConcurrentLoads`.
+Max **16** outstanding tile loads per layer (`maxConcurrentLoads`). A failed load is retried at twice the resolution value (coarser), up to 4 attempts; a tile keeps its previous geometry while a refinement is in flight.
 
 ### 5.8
 Non-COPC files (regular `.las`/`.laz`, DEMs) use the existing single-VBO path — streaming only activates for `.copc.laz` files (detected by `.copc.` in filename).
@@ -218,18 +213,18 @@ Nodata values (typically -9999 or -32768) are clamped to 0.
 **Move forward/backward** (mouse wheel; also Shift+Up/Down arrow keys, §10.2): translates the whole camera rig (both eye and target together) along the view direction — `target += fwd * (distance × 0.1 × dy)`. Deliberately NOT a distance-clamped zoom: an earlier version scaled `camera->distance` exponentially and clamped it to [0.001, 1000], which capped how far the camera could ever get from (or how close it could get to) the target — since this moves eye and target together, `distance` (the orbit radius, still used for pan/arrow step sizing and near/far computation) stays constant and there's no artificial travel limit.
 
 ### 7.3b
-**Double-click-to-focus**: double-clicking (< 0.4s between presses, < 5px screen-space movement between them — tracked in `mouseButtonCallback`, `gl_app.cpp`) picks the point under the cursor and recenters on it **without moving the eye**: `target` becomes the picked point, and `yaw`/`pitch`/`distance` are solved so that `position()` (= target + offset(yaw,pitch,distance)) lands exactly back on the eye's position from *before* the pick — `distance = |eye - picked|`, `pitch = asin(dir.y)`, `yaw = atan2(dir.x, dir.z)` where `dir = normalize(eye - picked)`. This is the same math as the Shift+drag head-turn (§7.1b), applied once instead of continuously per mouse-move.
+**Double-click-to-focus**: double-clicking (< 0.4s between presses, < 5px screen-space movement between them — tracked in `CameraController::onMouseButton`) picks the point under the cursor and recenters on it **without moving the eye**: `target` becomes the picked point, and `yaw`/`pitch`/`distance` are solved so that `position()` (= target + offset(yaw,pitch,distance)) lands exactly back on the eye's position from *before* the pick — `distance = |eye - picked|`, `pitch = asin(dir.y)`, `yaw = atan2(dir.x, dir.z)` where `dir = normalize(eye - picked)`. This is the same math as the Shift+drag head-turn (§7.1b), applied once instead of continuously per mouse-move.
 
 An earlier version instead kept `yaw`/`pitch`/`distance` unchanged and only reassigned `target` — which looks similar but isn't: since the picked point is generally at a different depth than the old target, preserving the *old* distance from a *new* point means `position()` recomputes to somewhere else — a disguised dolly/zoom along the view axis, not a pure recenter. Corrected per explicit user feedback: double-click "should [not] change zoom, [not] move along the view axis, just recenter and change rotation center." Pan/arrow-key step size (`distance × 0.05`, §7.2/§10.2) still adapts automatically afterward, since `distance` is updated to the *true* eye-to-target separation either way.
 
 Picking uses depth-buffer readback + `Camera::unproject()` (matrix inverse of `proj() × view()`), not CPU-side ray-geometry intersection — deliberately, since it works uniformly across every data source this app renders (LAZ/COPC points, the CPU-triangulated DEM mesh, and the GPU-tessellated+displaced DEM mesh) without needing per-type intersection code, and critically the GPU-tessellated path's CPU side only has the coarse, pre-displacement patch corners — a CPU ray test there would hit the wrong (undisplaced) surface entirely.
 
-Implementation detail worth noting: the actual `glReadPixels` call happens in `main.cpp`'s render loop, right after that frame's own rendering and before `glfwSwapBuffers` — not inside `mouseButtonCallback` (which only detects the double-click and records screen coordinates in `InputState::pickRequested/pickX/pickY`). Reading depth from inside the input callback would need `GL_FRONT` (since a swap may have already invalidated `GL_BACK`'s prior contents), which has real cross-platform reliability issues (compositors, some drivers, macOS quirks); reading the default `GL_BACK` immediately after this frame's draw calls is unambiguous. One-frame-old click coordinates at worst, imperceptible in practice. A depth of 1.0 (nothing rendered at that pixel — background) is treated as a miss and doesn't change `target`. A picked point coinciding with the eye itself (near-zero distance) is also treated as a no-op, to avoid a degenerate direction solve.
+The `glReadPixels` call happens in `ViewerApp::handlePick()`, right after that frame's scene rendering and before the UI and `glfwSwapBuffers`. It does not happen in the mouse callback, which only detects the double-click and records the screen coordinates. Reading depth from inside the input callback would need `GL_FRONT` (since a swap may have already invalidated `GL_BACK`'s prior contents), which has real cross-platform reliability issues (compositors, some drivers, macOS quirks); reading the default `GL_BACK` immediately after this frame's draw calls is unambiguous. One-frame-old click coordinates at worst, imperceptible in practice. A depth of 1.0 (nothing rendered at that pixel — background) is treated as a miss and doesn't change `target`. A picked point coinciding with the eye itself (near-zero distance) is also treated as a no-op, to avoid a degenerate direction solve.
 
 Verified self-consistent with `test_recenter_keeps_eye_fixed` in `tests/test_basic.cpp` (recomputing `position()` from the solved yaw/pitch/distance reproduces the original eye to within float tolerance) — the math, not the on-screen result, which remains unverified on real hardware.
 
 ### 7.4
-**Reset** (`R`): yaw=0.6, pitch=1.2 (~69° from horizontal), distance=2.0, target=origin.
+**Reset** (`R` / Reset button): yaw=0.6, pitch=1.2, target = centre of the visible layers' bounds (Y scaled by the Z exaggeration), distance = 1.3 × their diagonal.
 
 ### 7.5
 **Side view** (`V`): pitch=0.05 (nearly horizontal).
@@ -263,7 +258,7 @@ Transform the 8 bbox corners to view space, find min/max positive Z (distance in
 **Camera inside bbox** (fewer than 8 corners in front): use small nearP = `max(0.001, camDist × 0.005)` where camDist is distance to target.
 
 ### 8.5
-Only recompute when camera state (yaw, pitch, distance, target) or zScale changes. Cache last values; skip recompute if unchanged. `nearFarDirty` flag set by key handlers that change camera or Z scale.
+Near/far are recomputed every frame (8 corner transforms) from the union of the visible layers' bounds, so they follow streaming and background DEM rebuilds.
 
 ---
 
@@ -273,10 +268,10 @@ Only recompute when camera state (yaw, pitch, distance, target) or zScale change
 Point cloud drawn as `GL_POINTS` with perspective-correct sizing: `gl_PointSize = uPointSize × (viewportH / depth)`. Points are circular (fragment shader discards `gl_PointCoord` outside radius 0.5).
 
 ### 9.2
-Color modes: **elevation gradient** (blue → cyan → green → yellow → red, 5-stop ramp) and **orthophoto-sampled colors**. Toggle with `C` key. Default is orthophoto when available.
+Color modes, per layer: **elevation gradient** (blue → cyan → green → yellow → red, 5 stops, over the scene frame's Z range) or the file's RGB, versus **orthophoto-sampled colors**. Set per layer in the panel; `C` toggles every layer. Orthophoto is the default when available.
 
 ### 9.3
-Color toggle is instant: re-uploads the color VBO with `glBufferData`, no grid rebuild.
+Color toggle is instant. Full-load clouds re-upload their color VBO; COPC tiles keep both color buffers and re-point attribute 1; DEMs switch between texture and ramp in the shader.
 
 ### 9.4
 Background: dark gray (0.10, 0.11, 0.13).
@@ -288,11 +283,7 @@ Depth test enabled. MSAA (4×) enabled via `GLFW_SAMPLES`.
 Orthophoto quad NOT rendered as a flat plane in the point-cloud path — only used for point colorization there. (The flat-plane rendering was removed per user request; only the colorization remains for LiDAR point clouds. The DEM/DSM path, §9.7–9.9, does render a textured surface — that is a different code path, not a reintroduction of the removed flat quad.)
 
 ### 9.7
-**DEM/DSM adaptive mesh** (the DEM alternative to the point-cloud+orthophoto workflow, §2.2): elevation rasters are triangulated into a `GL_TRIANGLES` mesh instead of loaded as points.
-1. **Adaptive quadtree subdivision**: starting from an 8×8 coarse grid over the raster, each cell recursively subdivides (up to level 6) if either (a) its geometric error vs. bilinear interpolation of its 4 corners exceeds 1% of the elevation range, or (b) its texture footprint spans more than 64 orthophoto pixels.
-2. **Balance pass**: any leaf whose neighbor is 2+ levels finer is subdivided; repeated until stable (capped at 40 iterations) so no two adjacent leaves differ by more than one level.
-3. **T-junction-free welding**: each leaf gets a midpoint vertex on any edge whose neighbor is same-level or finer, so same-level neighbors share the midpoint and finer neighbors weld their corner to it.
-4. **Fan triangulation**: each leaf is triangulated as a fan from its center vertex to its boundary (4 corners + 0–4 edge midpoints).
+**DEM/DSM mesh**: a GPU-tessellated adaptive quadtree (`DEMTessMesh`; design in `docs/design-tessellation-displacement.md`). The CPU builds patches (subdivision by angular geometric error and texture span, balance pass, nodata-aware); the tessellation shaders refine them and displace them from an R32F heightmap. The coarsest level (maxLevel 0) is shown immediately and the full mesh is built on a background thread, then swapped in; parameter changes (max level, collapsing angle) rebuild the same way. The old CPU-triangulated fallback (`DEMMesh`) was removed: GL 4.1 is available on all supported macOS hardware.
 
 ### 9.8
 DEM mesh texturing: both the DEM's and the orthophoto's actual CRS (EPSG code) are read from each file's GeoKeyDirectoryTag (`readEPSGCode()`, geotiff.cpp) — not just their affine transforms, which alone can't reveal a CRS difference. If they differ and PROJ is available (optional dependency, see specs.md §12.1/Makefile), the orthophoto's 4 corners are reprojected via PROJ into the DEM's CRS and a new affine is re-fit (`reprojectToMatchCRS()`) before the normal world→UV transform is used. If PROJ isn't available, or the reprojection pipeline itself fails, or the two rasters still don't overlap even after a successful reprojection (same CRS now, but genuinely different ground coverage), texturing is skipped entirely rather than stretched — stretching would show imagery from a completely unrelated location, worse than no texture (console prints a warning with both extents, both EPSG codes if known, and a `gdalwarp` command using the DEM's *actual* EPSG code). If the orthophoto has no geo tags at all, it's stretched over the DEM extent instead — a deliberate convenience for pairing an untagged image with a DEM, since there's no correspondence metadata to contradict there. If no orthophoto is supplied, or the one supplied isn't usable per the above, the mesh shader falls back to an elevation color ramp: **dark blue-violet → teal → yellow** (3-stop, viridis-inspired) — distinct from the point cloud's 5-stop blue→cyan→green→yellow→red ramp (§9.2).
@@ -305,43 +296,25 @@ DEM elevation is read via `TIFFReadScanline`/`TIFFReadTile` (never `TIFFReadRGBA
 ## 10. Controls (Layout-Independent Letter Shortcuts)
 
 ### 10.1
-All keyboard shortcuts use **letters only** (no symbols), and are handled
-via GLFW's character callback (`glfwSetCharCallback`), not the key
-callback. This distinction matters and was previously wrong: GLFW's key
-callback identifies a PHYSICAL key position fixed to a US QWERTY layout —
-`GLFW_KEY_W`/`GLFW_KEY_A` fire based on where those letters sit on a US
-keyboard, regardless of the user's actual OS layout. On AZERTY (French)
-keyboards specifically, A/Q and W/Z are physically swapped and M relocates
-— so key-callback-based shortcuts for `W` and `A` actually fired when an
-AZERTY user pressed the keys labeled Z and Q respectively, not W and A.
-"Letters only" alone (the original claim here) only avoids the
-symbol/shift-state class of layout problems, not this one. The character
-callback reports the actual Unicode codepoint the OS's active layout
-produces for the physical key pressed, which is correct for AZERTY,
-QWERTZ, Dvorak, or any other layout. See `src/gl_app.h`'s banner comment
-for the full explanation.
+Letter shortcuts use GLFW's **character callback**, so they follow the active keyboard layout (AZERTY, QWERTZ, Dvorak, …) instead of US physical key positions. Non-character keys (arrows, Tab, Esc, Shift) use the key callback. Keys and clicks that ImGui wants (focus in a widget, cursor over a window) aren't passed to the viewer; mouse releases always are, so a drag ending over a window can't leave a button stuck.
 
 | Key | Action |
 |-----|--------|
-| `R` | Reset camera |
-| `E` | Increase Z exaggeration (×1.2) |
-| `D` | Decrease Z exaggeration (÷1.2) |
-| `U` | Reset Z to 1.0× (true scale) |
-| `S` | Decrease point density (Sparser, ÷1.5) |
-| `F` | Increase point density (Fuller, ×1.5) |
-| `N` | Decrease point size (÷1.3) |
-| `M` | Increase point size (×1.3) |
-| `C` | Toggle colors (orthophoto / elevation) |
-| `P` | Toggle perspective / orthographic |
-| `I` | Decrease point-collapsing angle (finer, more subdivision — DEM mesh only, triggers a reload) |
-| `O` | Increase point-collapsing angle (coarser, more merging — DEM mesh only, triggers a reload). Repurposed from the old occlusion-culling toggle (§5.6) — occlusion culling is now implemented (Hi-Z, §5.6) but has no key-based toggle; it's controlled only by `InputState::useOcclusion`'s default (`true`) |
-| `G` | Toggle the red master (coarse patch) edge overlay — default off (diagnostic-only, not a rendering feature) |
-| `V` | Side view |
-| `T` | Top view |
-| `B` | Toggle tile bounding-box wireframe overlay (streaming mode) |
-| `L` | Toggle on-screen console log overlay |
-| `H` | Show on-screen help (10 seconds) |
+| `R` | Reset view |
+| `E` / `D` / `U` | Z exaggeration ×1.2 / ÷1.2 / reset |
+| `F` / `S` | Point density ×1.5 / ÷1.5, and DEM max level +1 / −1 |
+| `M` / `N` | Point size ×1.3 / ÷1.3 |
+| `C` | Toggle colors on all layers |
+| `P` | Perspective / orthographic |
+| `I` / `O` | DEM collapsing angle ÷1.3 / ×1.3 (background rebuild) |
+| `W` / `A` / `G` | DEM wireframe / displacement / coarse-patch edges |
+| `V` / `T` | Side / top view |
+| `B` | COPC tile boxes (yellow = loaded, orange = refining) |
+| `L` / `H` | Log window / help window |
+| `Tab` | Show / hide the side panel |
 | `ESC` | Quit |
+
+Every setting above is also in the side panel.
 
 ### 10.2
 Arrow keys translate the eye (work on PRESS and REPEAT for continuous
@@ -364,19 +337,22 @@ screen plane).
 ## 11. On-Screen Help & Console Log
 
 ### 11.1
-`H` key displays an on-screen help overlay for **10 seconds**, then auto-hides.
+**Side panel** (ImGui, `src/viewer_ui.cpp`):
+- *Layers*: a visibility checkbox per layer, a status line (points drawn, tiles loading, patches, rebuilding), and the layer's own settings (colors; for DEMs: max level, collapsing angle, pixels/segment, wireframe, displacement, patch edges). The file path and EPSG code are in a tooltip. Orthophoto name, size and EPSG code are listed below the layers.
+- *View*: reset/top/side, projection, Z exaggeration, point size, point density, occlusion culling, tile boxes.
+- *Info*: fps, camera target and distance in world units, last picked point.
 
 ### 11.2
-Text (help overlay and console log, §11.5) is rendered via **FreeType** (`TextRenderer`): a glyph atlas covering ASCII 32–126 is rasterized once at startup into a single texture, then each `drawText()` call batches one textured-quad draw call using a dedicated text shader (screen-space, origin top-left, +Y down). This replaced an earlier hand-rolled 5×7 `GL_POINTS` bitmap font (which only covered uppercase A-Z, digits, space, and punctuation) — FreeType renders the full printable ASCII set without hardcoding per-character pixel grids.
+Help (`H`) is a window listing all controls; it replaces the 10-second text overlay.
 
 ### 11.3
-Text rendering is independent of the point-cloud vertex shader path — it has its own VAO/VBO/program and is unaffected by point subsampling, `uPointSize`, or `uDisableSubsampling`.
+While loading, a centred "Loading …" message is drawn between steps.
 
 ### 11.4
 `-h` / `--help` command-line flag prints all controls to stderr and exits.
 
 ### 11.5
-**Console log overlay** (`L` key toggle): `std::cerr` is intercepted at startup by a `LogCapture` streambuf that splits output on `\n`, stores up to the last 200 lines in a global buffer, and still forwards every line to the real stderr (so terminal output is unchanged). When toggled on, the last ~25 lines are drawn as green, semi-transparent text in the bottom-left of the window, scrolling as new log lines arrive — giving a live in-app view of load progress, tile streaming stats, and errors without needing a terminal.
+**Log window** (`L`): `std::cerr` is intercepted by `LogCapture` (thread-safe; loader threads log too), keeping the last 1000 lines and forwarding everything to the real stderr. The window scrolls with new lines unless the user has scrolled up; lines starting with `ERROR` / `WARNING` are colored. The per-second stats lines on stderr were removed; that information is in the panel.
 
 ---
 
@@ -387,7 +363,7 @@ Single `Makefile` with multi-OS detection (macOS MacPorts, macOS Homebrew, Linux
 
 ### 12.2
 Targets:
-- `make` / `make build` — compile main.cpp + src/*.cpp → lasviewer
+- `make` / `make build` — compile main.cpp + src/*.cpp + third_party/imgui → lasviewer
 - `make debug` — same, but `-g` instead of `-O2` → lasviewer-debug, in a separate `.build/obj-debug` object dir (so `make build`/`make debug` can't serve stale cross-mode object files to each other)
 - `make test` — compile + run unit tests (self-contained, no external deps)
 - `make lint` — static analysis (clang-tidy or cppcheck fallback)
@@ -399,13 +375,13 @@ Targets:
 - `make help` — show all targets
 
 ### 12.2b
-`make build` requires GLFW, PDAL, libtiff, glm, **and FreeType** (`libfreetype`/`freetype2`, for §11.2 text rendering). The Makefile probes for freetype via `pkg-config --cflags/--libs freetype2` and links `-lfreetype`.
+`make build` needs GLFW, PDAL, libtiff and glm. Dear ImGui is compiled from `third_party/imgui` (warnings suppressed for third-party code). Header dependencies are tracked with `-MMD -MP`.
 
 ### 12.2c
-**PROJ** (`proj`) is a genuinely optional dependency, unlike the above — detected via `pkg-config --exists proj` (same pattern as OpenMP's compiler-capability probe), setting `LASVIEWER_HAS_PROJ` when found. Used only by `reprojectToMatchCRS()` (geotiff.cpp) to auto-correct a detected DEM/orthophoto CRS mismatch (§9.2 texturing description above). The app builds and runs fully without it — a mismatch is still detected and reported either way, just not automatically reprojected.
+**PROJ** is optional, detected with `pkg-config proj`. MacPorts keeps its `.pc` in a versioned prefix, so `/opt/local/lib/proj9/lib/pkgconfig` (then `proj8`) is searched as well, preferring the PROJ that GDAL already loads. When found, `LASVIEWER_HAS_PROJ` enables DEM/orthophoto reprojection (§9.8).
 
 ### 12.3
-Test target does NOT require GLFW/PDAL/libtiff/FreeType — tests are self-contained math verification (see §13 — some tests replicate formulas from `src/*.cpp` locally rather than linking against them).
+`make test` builds two runners. `test_basic` is self-contained formula checks with no dependencies. `test_scene` links the real `camera.cpp` and `camera_controller.cpp` and uses `scene_frame.h`; it needs the glm and GLFW headers but no GL context.
 
 ### 12.4
 `.clang-tidy` config: bugprone-*, cert-*, misc-*, modernize-*, performance-*, readability-* checks. Magic numbers and identifier length suppressed.
@@ -421,7 +397,7 @@ Test target does NOT require GLFW/PDAL/libtiff/FreeType — tests are self-conta
 ## 13. Testing
 
 ### 13.1
-Unit tests in `tests/test_basic.cpp` verify core math formulas independently (no linking against main.cpp).
+`tests/test_basic.cpp` verifies core formulas by re-deriving them locally. `tests/test_scene.cpp` tests the real frame and camera code.
 
 ### 13.2
 Test coverage:
@@ -465,7 +441,7 @@ Single `glDrawArrays` call for the entire point cloud (no per-cell draw calls in
 Streaming mode: per-tile draw calls, but only loaded tiles are drawn. Max 16 concurrent background loads (`maxConcurrentLoads`, §5.7).
 
 ### 15.4
-Stats printed to stderr once per second: point count, tile count, camera distance.
+Stats are shown in the UI: fps, points drawn per layer, tiles drawn and culled, tiles loading, DEM patch counts.
 
 ---
 
@@ -475,7 +451,7 @@ Stats printed to stderr once per second: point count, tile count, camera distanc
 TIFF open failure: print error, return false, continue without orthophoto.
 
 ### 16.2
-PDAL driver inference failure: print error, return false, exit.
+An input PDAL can't open (driver inference failure, missing or corrupt file) is reported and skipped; the viewer exits with an error only if no layer at all could be loaded.
 
 ### 16.3
 GeoTIFF tag read failure: fall back to `.tfw` sidecar lookup. If no `.tfw` either, warn and continue with unaligned orthophoto.
@@ -493,27 +469,23 @@ Memory allocation failure (`_TIFFmalloc` returns null): print error, close TIFF,
 
 ## 17. File Structure
 
-```
-lasviewer/
-├── Makefile              # Multi-OS build (build/test/lint/fmt/dist/doc/clean/help)
-├── main.cpp              # Orchestration layer: argv parsing, GLFW/GL setup, render loop
-├── src/
-│   ├── camera.h/.cpp          # Orbit camera, projection, dynamic near/far
-│   ├── point_cloud.h/.cpp     # LAZ/LAS load (PDAL), spatial subsampling, GPU upload
-│   ├── geotiff.h/.cpp         # GeoTIFF tags, .tfw, TIFF load/downsample, ortho colorization
-│   ├── copc_streamer.h/.cpp   # Async COPC tile streaming, PCA/OBB LOD, LRU eviction
-│   ├── dem_mesh.h/.cpp        # Adaptive quadtree DEM/DSM mesh triangulation + texturing
-│   ├── shaders.h/.cpp         # Embedded GLSL sources (point/line/mesh) + compile/link
-│   ├── text_renderer.h/.cpp   # FreeType glyph atlas + textured-quad text rendering
-│   ├── gl_app.h/.cpp          # GLFW callbacks, InputState, LogCapture (console overlay)
-│   └── gl_platform.h          # Canonical GLFW+platform-GL include (see file header)
-├── README.md             # User documentation
-├── LICENSE.md            # BSD 3-Clause
-├── specs.md              # This specification
-├── .clang-format         # Code formatting config
-├── .clang-tidy           # Static analysis config
-├── tests/
-│   └── test_basic.cpp    # 9 unit tests
-└── docs/
-    └── Doxyfile          # Doxygen configuration
-```
+See README.md → Architecture for the per-file map (main.cpp, src/, third_party/imgui, tests/, docs/).
+
+---
+
+## 18. Scene and Layers
+
+### 18.1
+A **Scene** (`src/scene.h`) holds the shared `SceneFrame` (§3.2), at most one orthophoto (shared by every layer, outliving them) and an ordered list of **layers**. Loading (`Scene::load`): read all header extents → fix the frame → warn on CRS disagreement → load the orthophoto → create one layer per input. An input that fails is reported and skipped.
+
+### 18.2
+The **Layer** interface (`src/layer.h`): `bounds()` (GL space), `update(ctx)` (every frame, visible or not, to drain background work), `render(ctx)`, `renderOverlay(ctx)`, `wantsHiZ()`, `drawUI()` (ImGui settings), `status()`, `busy()`, and `handleAction(LayerAction)` for keyboard actions that apply to every layer (colors, DEM detail, …). Implementations: `PointCloudLayer`, `CopcLayer`, `DemLayer`.
+
+### 18.3
+`RenderContext` carries the view/projection matrices, camera position, FOV, viewport, projection mode, global `ViewSettings` (Z exaggeration, point size, point density, occlusion, tile boxes), the shared `Programs`, and the previous frame's Hi-Z pyramid.
+
+### 18.4
+Frame order (`ViewerApp::renderFrame`): near/far from the visible bounds → `update` all layers → clear → `render` visible layers → build Hi-Z if a visible layer wants it (otherwise invalidate it) → overlays → resolve a pending double-click pick from the depth buffer → ImGui.
+
+### 18.5
+Navigation is in `CameraController` (`src/camera_controller.*`), separate from GLFW callbacks and unit-tested: orbit, head turn, pan (scaled by window height, the cursor's coordinate space), fly, arrows, home, top/side, `focusOn()` (§7.3b), double-click detection.

@@ -9,6 +9,7 @@
 //   - colorizeFromOrthophoto(): CPU-side (OpenMP) per-point color sampling.
 #include "geotiff.h"
 #include "point_cloud.h"
+#include "scene_frame.h"
 
 #include <glm/glm.hpp>
 
@@ -52,28 +53,10 @@
 // ---------------------------------------------------------------------------
 // Read GeoTIFF tags and populate ortho.A/E/C/F (the affine transform).
 //
-// KNOWN LATENT RISK, flagged rather than fixed here: 33550/33922 are
-// GeoTIFF-spec tags, not baseline TIFF, and are read via TIFFGetField()
-// below WITHOUT an explicit TIFFMergeFieldInfo() registration — the exact
-// same pattern that caused a real, confirmed EXC_BAD_ACCESS crash for
-// TIFFTAG_GDAL_NODATA (42113) in dem_mesh.cpp's readDEMNodataValue() (a
-// type-confusion in libtiff's unregistered-tag varargs dispatch — see
-// that function's comment for the full explanation and the fix pattern:
-// register via TIFFMergeFieldInfo before calling TIFFGetField).
-//
-// This code has NOT crashed across this whole session's DEM/orthophoto
-// loads, and the likely reason is that GeoTIFF's core tags (including
-// these two) are common and standard enough that many libtiff builds —
-// including, apparently, whichever one is in use here — bundle them into
-// their OWN internal extended-tag table by default, unlike the more
-// GDAL-specific GDAL_NODATA tag. That's an inference from observed
-// behavior, not a guarantee for every libtiff build this app might run
-// against. Deliberately NOT touched right now: it's working, provably
-// stable code, and changing TIFF-tag-reading logic immediately after a
-// real crash in a similar area adds risk without a demonstrated need —
-// but if a future crash report ever points back to THIS function
-// specifically, the fix is the same registration pattern already applied
-// in dem_mesh.cpp.
+// Note: 33550/33922 are GeoTIFF tags read without TIFFMergeFieldInfo()
+// registration. That hasn't failed with the libtiff builds used so far
+// (GeoTIFF core tags are commonly pre-registered), unlike GDAL_NODATA
+// (see dem_io.cpp). Moving raster I/O to GDAL removes the question.
 // ---------------------------------------------------------------------------
 
 bool readGeoTIFFTags(TIFF* tif, Orthophoto& ortho) {
@@ -126,7 +109,7 @@ bool readGeoTIFFTags(TIFF* tif, Orthophoto& ortho) {
 // convention as readGeoTIFFTags() above (including its defensive
 // single-pointer fallback) — NOT the single-pointer convention that
 // caused a real, confirmed EXC_BAD_ACCESS crash for TIFFTAG_GDAL_NODATA
-// (dem_mesh.cpp, design doc §6p/6p-2) on an unregistered custom tag.
+// (dem_io.cpp, design doc §6p/6p-2) on an unregistered custom tag.
 // GeoKeyDirectoryTag, like ModelPixelScaleTag/ModelTiepointTag, is a core
 // GeoTIFF-spec tag, not a GDAL-specific extension, and this codebase's
 // existing use of this exact pattern for those two tags has not crashed
@@ -479,4 +462,57 @@ void colorizeFromOrthophoto(PointCloud& cloud, const Orthophoto& ortho) {
     cloud.hasOrthoColors = true;
     std::cerr << "[colorize] done (" << outOfBounds << " / " << cloud.pointCount
               << " outside orthophoto extent)" << std::endl;
+}
+
+// ---------------------------------------------------------------------------
+// Orthophoto loading with .tfw fallback, raster extents.
+// ---------------------------------------------------------------------------
+
+bool loadOrthophoto(const std::string& path, Orthophoto& ortho, int maxPixels) {
+    if (!loadTIFF(path, ortho, maxPixels)) return false;
+    if (!ortho.hasGeo) {
+        size_t dot = path.find_last_of('.');
+        std::string tfwPath = (dot != std::string::npos ? path.substr(0, dot) : path) + ".tfw";
+        loadTFW(tfwPath, ortho);
+    }
+    return true;
+}
+
+void orthoExtent(const Orthophoto& o, double& minX, double& minY, double& maxX, double& maxY) {
+    minX = o.C;
+    maxX = o.C + o.A * (o.width - 1);
+    maxY = o.F;
+    minY = o.F + o.E * (o.height - 1);
+    if (minX > maxX) std::swap(minX, maxX);
+    if (minY > maxY) std::swap(minY, maxY);
+}
+
+bool readRasterExtent(const std::string& path, WorldBounds& out, int& epsg) {
+    TIFF* tif = TIFFOpen(path.c_str(), "r");
+    if (!tif) return false;
+    uint32_t w = 0, h = 0;
+    TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &w);
+    TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
+    Orthophoto geo;
+    geo.width = static_cast<int>(w);
+    geo.height = static_cast<int>(h);
+    bool ok = w > 0 && h > 0 && readGeoTIFFTags(tif, geo);
+    epsg = 0;
+    if (ok) readEPSGCode(tif, epsg);
+    TIFFClose(tif);
+    if (!ok) return false;
+    double minX, minY, maxX, maxY;
+    orthoExtent(geo, minX, minY, maxX, maxY);
+    out.extendXY(minX, minY, maxX, maxY);
+    return true;
+}
+
+bool tiffLooksLikeImage(const std::string& path) {
+    TIFF* tif = TIFFOpen(path.c_str(), "r");
+    if (!tif) return false;
+    uint16_t bps = 8, spp = 1;
+    TIFFGetFieldDefaulted(tif, TIFFTAG_BITSPERSAMPLE, &bps);
+    TIFFGetFieldDefaulted(tif, TIFFTAG_SAMPLESPERPIXEL, &spp);
+    TIFFClose(tif);
+    return bps == 8 && spp >= 3;
 }

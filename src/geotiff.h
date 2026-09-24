@@ -7,6 +7,7 @@
 #include <tiffio.h>
 
 struct PointCloud; // forward decl from point_cloud.h
+struct WorldBounds; // scene_frame.h
 
 struct Orthophoto {
     int width = 0, height = 0;
@@ -18,7 +19,7 @@ struct Orthophoto {
     // catalogued CRS definition that readEPSGCode() doesn't attempt to
     // resolve). Used to detect a CRS MISMATCH between the DEM and an
     // orthophoto (both reuse this same struct type — see loadFromDEM()'s
-    // local `geo` variable in dem_mesh.cpp/dem_tess_mesh.cpp) and, when
+    // local `geo` variable in dem_tess_mesh.cpp) and, when
     // PROJ is available, to reproject one into the other's CRS.
     int epsg = 0;
 };
@@ -58,6 +59,21 @@ bool loadTFW(const std::string& path, Orthophoto& ortho);
 
 // Load a TIFF orthophoto (handles tiled/striped, JPEG/LZW, downsamples).
 bool loadTIFF(const std::string& path, Orthophoto& ortho, int maxPixels);
+
+// loadTIFF + ".tfw" sidecar fallback when the file has no GeoTIFF tags.
+bool loadOrthophoto(const std::string& path, Orthophoto& ortho, int maxPixels);
+
+// Georeferenced XY extent (pixel centers) and EPSG code of a raster, from its
+// tags only. Returns false if unreadable or not georeferenced.
+bool readRasterExtent(const std::string& path, WorldBounds& out, int& epsg);
+
+// True if the TIFF looks like imagery (8-bit, ≥3 bands) rather than an
+// elevation raster. Used to tell an orthophoto from a DEM on the command
+// line; Terrain-RGB DEMs are 8-bit RGB too and must be passed with -d.
+bool tiffLooksLikeImage(const std::string& path);
+
+// XY extent of a georeferenced orthophoto (pixel centers).
+void orthoExtent(const Orthophoto& o, double& minX, double& minY, double& maxX, double& maxY);
 
 // Bilinear sample the orthophoto at fractional pixel coords.
 glm::vec3 sampleOrthoBilinear(const Orthophoto& ortho, double col, double row);

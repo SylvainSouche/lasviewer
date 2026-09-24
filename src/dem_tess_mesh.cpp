@@ -2,12 +2,9 @@
 // normal-directed displacement mapping. See dem_tess_mesh.h and
 // docs/design-tessellation-displacement.md for the full design.
 //
-// SECOND REVISION: patches now come from the same adaptive quadtree
-// DEMMesh uses (see loadFromDEM() below), not a uniform grid — see the
-// header banner in dem_tess_mesh.h for why the first revision's uniform
-// grid was wrong (it discarded exactly the adaptivity that concentrates
-// small patches around sharp features, causing visible over-smoothing on
-// e.g. buildings sitting in an otherwise flat field).
+// Patches come from an adaptive quadtree, not a uniform grid: a uniform grid
+// loses the concentration of small patches around sharp features (design
+// doc §4).
 //
 // UNVERIFIED ON REAL GPU HARDWARE. This was written and reviewed without
 // access to a GL 4.x context or a compiler with GLFW/PDAL/libtiff
@@ -52,13 +49,10 @@
 #  define LASVIEWER_HAS_OPENMP 0
 #endif
 
-// Adaptive quadtree parameters — same spirit and same starting values as
-// DEMMesh's (dem_mesh.cpp), since this module's whole point is to restore
-// that same adaptive concentration of detail around sharp features while
-// adding GPU-side fine relief on top. Patch count = COARSE * 2^maxLevel
+// Adaptive quadtree parameters. Patch count = COARSE * 2^maxLevel
 // per axis; a level-L leaf's world size is (initial COARSE cell) / 2^L.
 //
-// maxLevel is now a runtime, per-instance member (S/F keys, main.cpp) —
+// maxLevel is a runtime, per-instance member (DemLayer: F/S keys, UI) —
 // see DEMTessMesh::maxLevel in dem_tess_mesh.h — rather than a fixed
 // constant. History: originally 6, reduced to 3 in direct response to a
 // "coarser base tessellation, ~10x fewer per axis" request, on the theory
@@ -125,15 +119,15 @@ bool demTessSupported() {
 }
 
 // ---------------------------------------------------------------------------
-// DEMTessMesh::loadFromDEM — CPU-only. Reads the DEM, builds a uniform
-// coarse patch grid with per-vertex normals, and keeps the full-resolution
-// heightmap (pre-converted to GL-space Y) for uploadGPU() to texture.
-// No GL calls here — mirrors DEMMesh::loadFromDEM's calling convention,
-// which main.cpp invokes before a GL context exists.
+// DEMTessMesh::loadFromDEM — CPU-only (no GL calls; runs on the background
+// build thread). Reads the DEM, builds the adaptive patch set, and keeps the
+// full-resolution heightmap (in GL-space Y) for uploadGPU() to texture.
 // ---------------------------------------------------------------------------
 bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
-                              double angleThresholdDeg, int maxLevelParam,
+                              const SceneFrame& frame_, double angleThresholdDeg,
+                              int maxLevelParam,
                               const std::atomic<bool>* cancelFlag) {
+    frame = frame_;
     collapseAngleDeg = angleThresholdDeg;
     maxLevel = maxLevelParam;
     orthoUsable = true; // reset each load — this object can be reloaded with
@@ -167,9 +161,7 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
         TIFFClose(tif);
         return false;
     }
-    // Declared NODATA value (GDAL_NODATA tag) — read while the TIFF is
-    // still open. See dem_mesh.h's readDEMNodataValue() declaration and
-    // dem_mesh.cpp's use of it (kept in sync here) for why this matters.
+    // Declared NODATA value (GDAL_NODATA tag) — see dem_io.h.
     float declaredNodata = 0.0f;
     bool hasDeclaredNodata = readDEMNodataValue(tif, declaredNodata);
     if (!hasDeclaredNodata) {
@@ -178,9 +170,7 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
     }
     TIFFClose(tif);
 
-    // Unified nodata test — see dem_mesh.cpp's identical helper for the
-    // full reasoning. Used everywhere in this function instead of a
-    // hardcoded "< -9000.0f".
+    // Nodata test used throughout: the declared value if any, else < -9000.
     auto isNodataValue = [&](float v) -> bool {
         if (hasDeclaredNodata) {
             float tol = 1e-3f * std::max(1.0f, std::abs(declaredNodata));
@@ -205,12 +195,10 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
     if (minY > maxY) std::swap(minY, maxY);
     bboxMin = glm::dvec3(minX, minY, zMin);
     bboxMax = glm::dvec3(maxX, maxY, zMax);
-    worldCenter = (bboxMin + bboxMax) * 0.5;
-    worldScale = glm::length(bboxMax - bboxMin);
-    if (worldScale < 1e-9) worldScale = 1.0;
-    double invScale = 1.0 / worldScale;
+    const glm::dvec3 worldCenter = frame.center;
+    double invScale = 1.0 / frame.scale;
 
-    // Bilinear elevation sampler (clamps to edge) — same as DEMMesh's.
+    // Bilinear elevation sampler (clamps to edge).
     auto sampleElev = [&](double col, double row) -> float {
         if (col < 0) col = 0;
         if (col > w - 1) col = w - 1;
@@ -248,10 +236,8 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
         return isNodataValue(elevs[static_cast<size_t>(r) * w + c]);
     };
 
-    // Same UV-mode determination as DEMMesh::loadFromDEM (geo-matched vs.
-    // stretch-fit fallback) — kept as a small, deliberate duplication here
-    // rather than factoring a shared helper, to keep this module's only
-    // cross-file dependency on dem_mesh.cpp limited to readDEMElevations().
+    // UV mode: geo-matched when the ortho is georeferenced, stretch-fit
+    // over the DEM extent otherwise.
     // `ortho` itself is a shared, externally-owned, const object — also
     // read concurrently by other background builds (§6l) — so it can't be
     // mutated in place for reprojection. `orthoEff` is what the rest of
@@ -529,7 +515,7 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
 
     // -------------------------------------------------------------------
     // Adaptive quadtree subdivision — REVISED from the first pass, which
-    // reused DEMMesh's positional geometric-error test unchanged (single
+    // used a positional geometric-error test (single
     // sample at the cell center vs. bilinear interpolation of the 4
     // corners). That test measures *deviation from planarity*, not
     // *amount of relief* — a perfectly (or near-)planar but STEEP slope
@@ -953,8 +939,7 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
         float cLeft   = edgeConstraintFor(c.col - eps, midR);
         float cBottom = edgeConstraintFor(midC, c.row - eps);
 
-        // CCW from bottom-left: 0=BL,1=BR,2=TR,3=TL — matches
-        // DEMMesh's corner convention (dem_mesh.cpp's getVert() usage).
+        // CCW from bottom-left: 0=BL,1=BR,2=TR,3=TL.
         addCorner(c.col,          c.row);
         addCorner(c.col + c.cw,   c.row);
         addCorner(c.col + c.cw,   c.row + c.ch);
@@ -982,10 +967,8 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
         heightmapGLSpace[i] = static_cast<float>((e - worldCenter.z) * invScale);
     }
 
-    // GL-space bbox (from patch corners — displacement can locally exceed
-    // this by the same amount DEMMesh's per-vertex elevation already would
-    // have captured exactly; this is a coarse approximation feeding
-    // dynamic near/far, same caveat as DEMMesh's own bbox).
+    // GL-space bbox from patch corners (displacement can locally exceed it;
+    // good enough for near/far and framing).
     float mnx=1e30f, mxx=-1e30f, mny=1e30f, mxy=-1e30f, mnz=1e30f, mxz=-1e30f;
     for (size_t i = 0; i < patchPositions.size(); i += 3) {
         float x = patchPositions[i], y = patchPositions[i+1], z = patchPositions[i+2];
@@ -1069,13 +1052,9 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
     heightmapGLSpace.clear();
     heightmapGLSpace.shrink_to_fit();
 
-    // --- Color texture (orthophoto), same RGBA8 upload main.cpp already
-    // does for DEMMesh — done here instead so main.cpp's DEM-tessellation
-    // integration stays to a handful of lines (see main.cpp). Gated on
-    // orthoUsable too, not just having pixels: see that field's comment
-    // in dem_tess_mesh.h for why an orthophoto whose own geo metadata says
-    // it doesn't overlap the DEM should render untextured (elevation
-    // ramp), not stretched to fit anyway. ---
+    // --- Color texture (orthophoto), uploaded once and kept across
+    // rebuilds. Skipped when the ortho's georeferencing says it doesn't
+    // overlap the DEM (orthoUsable, see dem_tess_mesh.h). ---
     if (!orthoUsable && colorTex) {
         glDeleteTextures(1, &colorTex);
         colorTex = 0;
@@ -1192,21 +1171,10 @@ void DEMTessMesh::render(GLuint tessProgram, const glm::mat4& V, const glm::mat4
     float tanHalfFov = std::tan(glm::radians(fov) * 0.5f);
     glUniform1f(glGetUniformLocation(tessProgram, "uTanHalfFov"), tanHalfFov);
 
-    // targetPixelsPerSegment (S/F-controlled triangle density, main.cpp)
-    // drives the free formula directly. The constrained-edge (LOD-
-    // transition) level must move in lockstep with it — both need to scale
-    // by the same factor relative to their design-doc defaults (8px and
-    // 4.0 respectively) for a constrained edge to stay crack-free at any
-    // density setting, since both sides of that edge read the SAME
-    // uConstrainedEdgeTessLevel uniform value each frame regardless of
-    // what density is currently selected.
-    // Lower bound dropped from 0.5 to 0.01 — 0.5 silently defeated the
-    // density ceiling raise in gl_app.cpp's 'f' case (128x density gives
-    // targetPixelsPerSegment as low as 0.0625, which a 0.5 floor here
-    // would have clamped straight back up to 0.5, making that fix a
-    // no-op). The floor still exists to avoid a literal division-by-zero-
-    // adjacent value reaching the shader, not to cap how fine density can
-    // usefully go.
+    // targetPixelsPerSegment drives the free (same-level edge) formula. The
+    // constrained (LOD-transition) level scales with it from the design
+    // defaults (8 px ↔ 4.0) so both stay consistent; both sides of such an
+    // edge read the same uniform, so it stays crack-free at any setting.
     float clampedTargetPx = glm::clamp(targetPixelsPerSegment, 0.01f, 64.0f);
     glUniform1f(glGetUniformLocation(tessProgram, "uTargetPixelsPerSegment"), clampedTargetPx);
     float constrainedLevel = glm::clamp(4.0f * (8.0f / clampedTargetPx), 1.0f, 64.0f);
@@ -1221,7 +1189,7 @@ void DEMTessMesh::render(GLuint tessProgram, const glm::mat4& V, const glm::mat4
     glUniform1f(glGetUniformLocation(tessProgram, "uMinElev"), glBBoxMinY);
     glUniform1f(glGetUniformLocation(tessProgram, "uMaxElev"), glBBoxMaxY);
 
-    if (colorTex) {
+    if (colorTex && showTexture) {
         glUniform1i(glGetUniformLocation(tessProgram, "uHasTexture"), 1);
         glUniform1i(glGetUniformLocation(tessProgram, "uTexture"), 1);
         glActiveTexture(GL_TEXTURE1);
@@ -1260,19 +1228,14 @@ void DEMTessMesh::destroy() {
 // ---------------------------------------------------------------------------
 
 DEMTessMesh::~DEMTessMesh() {
-    // Block until any in-flight background build finishes before this
-    // object is destroyed — the background thread captures `this` and
-    // would otherwise risk touching freed memory. Same reasoning as
-    // TileGrid::stop()/~TileGrid() in copc_streamer.cpp for the point-
-    // cloud streaming thread. Does NOT call destroy() here — GPU resource
-    // cleanup stays main.cpp's explicit responsibility, unchanged, since
-    // destroying GL objects requires a current context, which isn't
-    // guaranteed at arbitrary destruction time.
+    // The build thread captures `this`: wait for it. GL resources are freed
+    // by destroy() (the owner calls it with a current context).
     if (bgThread.joinable()) bgThread.join();
 }
 
 void DEMTessMesh::requestBackgroundBuild(const std::string& path, const Orthophoto* ortho,
-                                         double angleThresholdDeg, int maxLevelParam) {
+                                         const SceneFrame& frame_, double angleThresholdDeg,
+                                         int maxLevelParam) {
     if (bgInProgress.load()) {
         // The currently running build is now obsolete — it's about to be
         // replaced by this request — so signal it to abort rather than
@@ -1297,15 +1260,17 @@ void DEMTessMesh::requestBackgroundBuild(const std::string& path, const Orthopho
         bgHasPendingRequest = true;
         bgPendingPath = path;
         bgPendingOrtho = ortho;
+        bgPendingFrame = frame_;
         bgPendingAngle = angleThresholdDeg;
         bgPendingMaxLevel = maxLevelParam;
         return;
     }
-    startBackgroundBuildNow(path, ortho, angleThresholdDeg, maxLevelParam);
+    startBackgroundBuildNow(path, ortho, frame_, angleThresholdDeg, maxLevelParam);
 }
 
 void DEMTessMesh::startBackgroundBuildNow(const std::string& path, const Orthophoto* ortho,
-                                          double angleThresholdDeg, int maxLevelParam) {
+                                          const SceneFrame& frame_, double angleThresholdDeg,
+                                          int maxLevelParam) {
     // The only thread that could possibly be joinable here has already
     // finished (we only reach this point when bgInProgress is false,
     // which the background thread itself sets — as the very last thing it
@@ -1324,13 +1289,13 @@ void DEMTessMesh::startBackgroundBuildNow(const std::string& path, const Orthoph
     std::cerr << "[dem-tess] background rebuild START (angle="
               << angleThresholdDeg << "\u00b0, maxLevel=" << maxLevelParam
               << ")" << std::endl;
-    bgThread = std::thread([this, path, ortho, angleThresholdDeg, maxLevelParam, cancelFlag]() {
+    bgThread = std::thread([this, path, ortho, frame_, angleThresholdDeg, maxLevelParam, cancelFlag]() {
         // Builds an entirely separate, temporary instance — reuses
         // loadFromDEM() completely unchanged. This touches no GL state and
         // no member of `this`, so it's safe to run concurrently with the
         // main thread rendering `this`'s CURRENT (old) data.
         auto tmp = std::make_unique<DEMTessMesh>();
-        bool ok = tmp->loadFromDEM(path, ortho, angleThresholdDeg, maxLevelParam,
+        bool ok = tmp->loadFromDEM(path, ortho, frame_, angleThresholdDeg, maxLevelParam,
                                    cancelFlag.get());
         bool wasCancelled = cancelFlag->load(std::memory_order_relaxed);
         if (wasCancelled) {
@@ -1374,8 +1339,7 @@ bool DEMTessMesh::pollBackgroundBuild(const Orthophoto* ortho) {
             heightmapGLSpace = std::move(pending->heightmapGLSpace);
             heightmapSrcW = pending->heightmapSrcW;
             heightmapSrcH = pending->heightmapSrcH;
-            worldCenter = pending->worldCenter;
-            worldScale = pending->worldScale;
+            frame = pending->frame;
             bboxMin = pending->bboxMin;
             bboxMax = pending->bboxMax;
             glBBoxMin = pending->glBBoxMin;
@@ -1395,7 +1359,8 @@ bool DEMTessMesh::pollBackgroundBuild(const Orthophoto* ortho) {
     // inside the background thread, right before it exited).
     if (!bgInProgress.load() && bgHasPendingRequest) {
         bgHasPendingRequest = false;
-        startBackgroundBuildNow(bgPendingPath, bgPendingOrtho, bgPendingAngle, bgPendingMaxLevel);
+        startBackgroundBuildNow(bgPendingPath, bgPendingOrtho, bgPendingFrame, bgPendingAngle,
+                                bgPendingMaxLevel);
     }
     return swapped;
 }

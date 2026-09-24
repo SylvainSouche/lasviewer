@@ -6,6 +6,7 @@
 // update(). No Tile is touched from two threads.
 #pragma once
 #include "gl_platform.h"
+#include "scene_frame.h"
 #include <glm/glm.hpp>
 #include <condition_variable>
 #include <deque>
@@ -15,6 +16,7 @@
 #include <vector>
 
 struct Orthophoto; // geotiff.h
+struct RenderContext; // layer.h
 
 struct Tile {
     double minX, minY, minZ, maxX, maxY, maxZ;
@@ -26,7 +28,7 @@ struct Tile {
     bool inFlight = false;          // a load request is queued or running
     int failures = 0;               // consecutive failed loads (backs off resolution)
     float loadedResolution = 0.0f;  // 0 = nothing loaded
-    GLuint vao = 0, vboPos = 0, vboCol = 0;
+    GLuint vao = 0, vboPos = 0, vboCol = 0, vboOrthoCol = 0; // vboOrthoCol: 0 without ortho
     GLsizei pointCount = 0;
 
     // Per-tile PCA (oriented bounding box), drives desiredResolution().
@@ -41,34 +43,10 @@ struct TileGrid {
     std::vector<Tile> tiles;
     int gridX = 8, gridY = 8;
     double tileW = 0, tileH = 0;
-    double worldCenterX = 0, worldCenterY = 0, worldCenterZ = 0, worldScale = 1;
-    double colorZMin = 0, colorZMax = 1; // elevation-ramp range (world units)
+    SceneFrame frame;
+    bool useOrthoColors = false;
     int maxConcurrentLoads = 16;
     int pendingLoads = 0;
-
-    // --- Hi-Z occlusion culling (see captureAndBuildHiZ) ---
-    // Each frame's depth is max-reduced into a mip pyramid; a small (~64x64)
-    // level is read back once and used on the NEXT frame to skip tiles whose
-    // whole screen footprint lies behind known geometry. One frame stale by
-    // design: the only failure mode is a newly-disoccluded tile missing for
-    // one frame.
-    GLuint hizCopyProgram = 0, hizDownsampleProgram = 0;
-    GLuint hizFullscreenVAO = 0;
-    GLuint hizFBO = 0;
-    GLuint hizDepthCaptureTex = 0; // GL_DEPTH_COMPONENT32F, blit target
-    GLuint hizPyramidTex = 0;      // GL_R32F, mipmapped
-    int hizCaptureW = 0, hizCaptureH = 0;
-    int hizLevels = 0;
-    int hizReadLevel = 0;
-    int hizReadW = 0, hizReadH = 0;
-    std::vector<float> hizReadback;
-    bool hizReady = false;
-
-    void initHiZ();
-    void resizeHiZIfNeeded(int viewportW, int viewportH);
-    void captureAndBuildHiZ(int viewportW, int viewportH);
-    bool isTileOccludedByHiZ(const Tile& t, const glm::mat4& VP) const;
-    void destroyHiZ();
 
     // --- Loader thread ---
     struct LoadRequest {
@@ -80,7 +58,7 @@ struct TileGrid {
         int tileIndex;
         double resolution;
         bool ok = false;
-        std::vector<float> positions, colors;
+        std::vector<float> positions, colors, orthoColors;
     };
     std::deque<LoadRequest> requests;
     std::deque<LoadResult> results;
@@ -91,19 +69,21 @@ struct TileGrid {
     std::string copcPath;
     const Orthophoto* orthoPtr = nullptr;
 
-    void init(const std::string& copcPath,
-              double minX, double minY, double minZ,
-              double maxX, double maxY, double maxZ,
-              const Orthophoto* ortho);
+    // bounds: the file's header extent. ortho may be null (elevation colors
+    // only); it must outlive the grid.
+    void init(const std::string& copcPath, const WorldBounds& bounds,
+              const Orthophoto* ortho, const SceneFrame& frame);
     ~TileGrid();
     void requestLoad(int tileIndex, double resolution);
     void uploadTile(Tile& t, LoadResult& r);
     void releaseTileGL(Tile& t);
     double desiredResolution(const Tile& t, const glm::vec3& camPos, float fov, float viewportH);
     void update(const glm::vec3& camPos, float fov, float viewportH);
-    void render(GLuint pointProgram, const glm::mat4& V, const glm::mat4& P,
-                const glm::vec3& camPos, float fov, float viewportW, float viewportH,
-                float zScale, float pointSizeMul, bool useOcclusion);
+    void render(const RenderContext& ctx);
+    void setUseOrthoColors(bool useOrtho);
+
+    // Last render()'s counts.
+    size_t drawnTiles = 0, drawnPoints = 0, culledTiles = 0;
     void stop();
     void loaderRun();
     LoadResult loadTile(const LoadRequest& req) const;

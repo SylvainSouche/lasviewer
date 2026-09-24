@@ -21,6 +21,7 @@
 //     DEM generally cover different extents, so they must not be conflated.
 #pragma once
 #include "gl_platform.h"
+#include "scene_frame.h"
 #include <glm/glm.hpp>
 #include <atomic>
 #include <cstdint>
@@ -51,8 +52,7 @@ struct DEMTessMesh {
     std::vector<float> heightmapGLSpace;
     int heightmapSrcW = 0, heightmapSrcH = 0;
 
-    glm::dvec3 worldCenter{0.0};
-    double worldScale = 1.0;
+    SceneFrame frame;
     glm::dvec3 bboxMin{0.0}, bboxMax{0.0};
     glm::vec2 glBBoxMin{0.0f}, glBBoxMax{0.0f};
     float glBBoxMinY = 0.0f, glBBoxMaxY = 0.0f;
@@ -72,10 +72,11 @@ struct DEMTessMesh {
     GLuint vao = 0, posVBO = 0, uvVBO = 0, heightUVVBO = 0, edgeConstraintVBO = 0;
     GLuint heightmapTex = 0;
     GLuint colorTex = 0;   // orthophoto; 0 = elevation ramp
+    bool showTexture = true; // false = elevation ramp even with a colorTex
 
     // Step 1 (no GL context needed). ortho may be null. cancelFlag, if set
     // during the build, makes it return false early.
-    bool loadFromDEM(const std::string& path, const Orthophoto* ortho,
+    bool loadFromDEM(const std::string& path, const Orthophoto* ortho, const SceneFrame& frame,
                      double angleThresholdDeg = 1.0, int maxLevelParam = 5,
                      const std::atomic<bool>* cancelFlag = nullptr);
 
@@ -107,7 +108,8 @@ struct DEMTessMesh {
     // the running build and is started once it has exited (intermediate
     // requests coalesce into the latest).
     void requestBackgroundBuild(const std::string& path, const Orthophoto* ortho,
-                                double angleThresholdDeg, int maxLevelParam);
+                                const SceneFrame& frame, double angleThresholdDeg,
+                                int maxLevelParam);
     bool pollBackgroundBuild(const Orthophoto* ortho);
     bool backgroundBuildInProgress() const { return bgInProgress.load(); }
 
@@ -115,7 +117,8 @@ struct DEMTessMesh {
 
 private:
     void startBackgroundBuildNow(const std::string& path, const Orthophoto* ortho,
-                                 double angleThresholdDeg, int maxLevelParam);
+                                 const SceneFrame& frame, double angleThresholdDeg,
+                                 int maxLevelParam);
 
     std::thread bgThread;
     std::mutex bgMutex;
@@ -129,6 +132,7 @@ private:
     bool bgHasPendingRequest = false;
     std::string bgPendingPath;
     const Orthophoto* bgPendingOrtho = nullptr;
+    SceneFrame bgPendingFrame;
     double bgPendingAngle = 1.0;
     int bgPendingMaxLevel = 5;
 };

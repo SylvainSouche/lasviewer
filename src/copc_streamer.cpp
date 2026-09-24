@@ -6,7 +6,8 @@
 // on each tile's projected on-screen size.
 #include "copc_streamer.h"
 #include "geotiff.h"
-#include "shaders.h"
+#include "hiz.h"
+#include "layer.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -68,29 +69,27 @@ TileGrid::LoadResult TileGrid::loadTile(const LoadRequest& req) const {
     pdal::PointViewSet views = reader->execute(table);
     bool hasZ = table.layout()->hasDim(pdal::Dimension::Id::Z);
 
-    double zRange = std::max(colorZMax - colorZMin, 1e-6);
-    double invScale = 1.0 / worldScale;
+    double zRange = std::max(frame.zMax - frame.zMin, 1e-6);
+    bool withOrtho = orthoPtr && orthoPtr->hasGeo;
     for (const auto& view : views) {
-        res.positions.reserve(res.positions.size() + view->size() * 3);
-        res.colors.reserve(res.colors.size() + view->size() * 3);
-        for (pdal::PointId i = 0; i < view->size(); ++i) {
+        size_t n = view->size();
+        res.positions.reserve(res.positions.size() + n * 3);
+        res.colors.reserve(res.colors.size() + n * 3);
+        if (withOrtho) res.orthoColors.reserve(res.orthoColors.size() + n * 3);
+        for (pdal::PointId i = 0; i < n; ++i) {
             double wx = view->getFieldAs<double>(pdal::Dimension::Id::X, i);
             double wy = view->getFieldAs<double>(pdal::Dimension::Id::Y, i);
             double wz = hasZ ? view->getFieldAs<double>(pdal::Dimension::Id::Z, i) : 0.0;
-            res.positions.push_back(static_cast<float>((wx - worldCenterX) * invScale));
-            res.positions.push_back(static_cast<float>((wz - worldCenterZ) * invScale));
-            res.positions.push_back(static_cast<float>(-(wy - worldCenterY) * invScale));
-            glm::vec3 c;
-            if (orthoPtr && orthoPtr->hasGeo) {
+            glm::vec3 p = frame.toGL(wx, wy, wz);
+            res.positions.insert(res.positions.end(), {p.x, p.y, p.z});
+            glm::vec3 c = elevationColorRamp(static_cast<float>((wz - frame.zMin) / zRange));
+            res.colors.insert(res.colors.end(), {c.r, c.g, c.b});
+            if (withOrtho) {
                 double ocol = (orthoPtr->A != 0) ? (wx - orthoPtr->C) / orthoPtr->A : 0;
                 double orow = (orthoPtr->E != 0) ? (wy - orthoPtr->F) / orthoPtr->E : 0;
-                c = sampleOrthoBilinear(*orthoPtr, ocol, orow);
-            } else {
-                c = elevationColorRamp(static_cast<float>((wz - colorZMin) / zRange));
+                glm::vec3 o = sampleOrthoBilinear(*orthoPtr, ocol, orow);
+                res.orthoColors.insert(res.orthoColors.end(), {o.r, o.g, o.b});
             }
-            res.colors.push_back(c.r);
-            res.colors.push_back(c.g);
-            res.colors.push_back(c.b);
         }
     }
     res.ok = true;
@@ -138,25 +137,19 @@ void TileGrid::requestLoad(int tileIndex, double resolution) {
 // init / stop
 // ===========================================================================
 
-void TileGrid::init(const std::string& copcPath_,
-                    double minX, double minY, double minZ,
-                    double maxX, double maxY, double maxZ,
-                    const Orthophoto* ortho) {
+void TileGrid::init(const std::string& copcPath_, const WorldBounds& bounds,
+                    const Orthophoto* ortho, const SceneFrame& frame_) {
     orthoPtr = ortho;
     copcPath = copcPath_;
-    worldCenterX = (minX + maxX) * 0.5;
-    worldCenterY = (minY + maxY) * 0.5;
-    worldCenterZ = (minZ + maxZ) * 0.5;
-    worldScale = glm::length(glm::dvec3(maxX - minX, maxY - minY, maxZ - minZ));
-    if (worldScale < 1e-9) worldScale = 1.0;
-    colorZMin = minZ;
-    colorZMax = maxZ;
+    frame = frame_;
+    useOrthoColors = ortho && ortho->hasGeo;
+    double minX = bounds.min.x, minY = bounds.min.y, minZ = bounds.min.z;
+    double maxX = bounds.max.x, maxY = bounds.max.y, maxZ = bounds.max.z;
 
     tileW = (maxX - minX) / gridX;
     tileH = (maxY - minY) / gridY;
 
     tiles.resize(static_cast<size_t>(gridX) * gridY);
-    double invScale = 1.0 / worldScale;
     for (int gy = 0; gy < gridY; ++gy) {
         for (int gx = 0; gx < gridX; ++gx) {
             Tile& t = tiles[gy * gridX + gx];
@@ -166,21 +159,14 @@ void TileGrid::init(const std::string& copcPath_,
             t.minY = minY + gy * tileH;
             t.maxY = t.minY + tileH;
             t.minZ = minZ; t.maxZ = maxZ;
-            t.glMin = glm::vec3(
-                static_cast<float>((t.minX - worldCenterX) * invScale),
-                static_cast<float>((t.minZ - worldCenterZ) * invScale),
-                static_cast<float>(-(t.maxY - worldCenterY) * invScale));
-            t.glMax = glm::vec3(
-                static_cast<float>((t.maxX - worldCenterX) * invScale),
-                static_cast<float>((t.maxZ - worldCenterZ) * invScale),
-                static_cast<float>(-(t.minY - worldCenterY) * invScale));
+            t.glMin = frame.toGL(t.minX, t.maxY, t.minZ);
+            t.glMax = frame.toGL(t.maxX, t.minY, t.maxZ);
             t.glCenter = (t.glMin + t.glMax) * 0.5f;
             t.glRadius = glm::length(t.glMax - t.glMin) * 0.5f;
         }
     }
 
     worker = std::thread(&TileGrid::loaderRun, this);
-    initHiZ();
 
     // Coarse first pass: every tile at ~500 points, for a fast first frame.
     double coarseRes = std::clamp(std::sqrt(tileW * tileH / 500.0), 1.0, 50.0);
@@ -203,273 +189,15 @@ void TileGrid::stop() {
 TileGrid::~TileGrid() {
     stop();
     for (auto& t : tiles) releaseTileGL(t);
-    destroyHiZ();
 }
 
 void TileGrid::releaseTileGL(Tile& t) {
     if (t.vao) glDeleteVertexArrays(1, &t.vao);
     if (t.vboPos) glDeleteBuffers(1, &t.vboPos);
     if (t.vboCol) glDeleteBuffers(1, &t.vboCol);
-    t.vao = t.vboPos = t.vboCol = 0;
+    if (t.vboOrthoCol) glDeleteBuffers(1, &t.vboOrthoCol);
+    t.vao = t.vboPos = t.vboCol = t.vboOrthoCol = 0;
     t.pointCount = 0;
-}
-
-// ===========================================================================
-// Hi-Z occlusion culling — see the mechanism comment on the member
-// declarations in copc_streamer.h for the full explanation.
-// ===========================================================================
-
-void TileGrid::initHiZ() {
-    hizCopyProgram = shaders::linkProgram(shaders::kHiZVert, shaders::kHiZCopyFrag);
-    hizDownsampleProgram = shaders::linkProgram(shaders::kHiZVert, shaders::kHiZDownsampleFrag);
-    if (!hizCopyProgram || !hizDownsampleProgram) {
-        std::cerr << "[occlusion] Hi-Z shader setup failed — occlusion culling disabled "
-                     "for this session (tiles will render exactly as if useOcclusion "
-                     "were false)" << std::endl;
-        if (hizCopyProgram) { glDeleteProgram(hizCopyProgram); hizCopyProgram = 0; }
-        if (hizDownsampleProgram) { glDeleteProgram(hizDownsampleProgram); hizDownsampleProgram = 0; }
-        return;
-    }
-    glGenVertexArrays(1, &hizFullscreenVAO);
-    glGenFramebuffers(1, &hizFBO);
-    std::cerr << "[occlusion] Hi-Z occlusion culling initialized" << std::endl;
-}
-
-// Target size (in texels, roughly square) for the ONE mip level read back
-// to the CPU each frame — see the "deliberately reads back only a small,
-// fixed-size" comment in copc_streamer.h for why this is a single small
-// transfer rather than a per-tile GPU query.
-static const int kHiZTargetReadSize = 64;
-
-void TileGrid::resizeHiZIfNeeded(int viewportW, int viewportH) {
-    if (!hizCopyProgram || !hizDownsampleProgram) return; // init failed — disabled
-    if (viewportW <= 0 || viewportH <= 0) return;
-    if (viewportW == hizCaptureW && viewportH == hizCaptureH && hizPyramidTex != 0) {
-        return; // already correctly sized
-    }
-    hizCaptureW = viewportW;
-    hizCaptureH = viewportH;
-
-    if (hizDepthCaptureTex) { glDeleteTextures(1, &hizDepthCaptureTex); hizDepthCaptureTex = 0; }
-    glGenTextures(1, &hizDepthCaptureTex);
-    glBindTexture(GL_TEXTURE_2D, hizDepthCaptureTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, viewportW, viewportH, 0,
-                 GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    if (hizPyramidTex) { glDeleteTextures(1, &hizPyramidTex); hizPyramidTex = 0; }
-    glGenTextures(1, &hizPyramidTex);
-    glBindTexture(GL_TEXTURE_2D, hizPyramidTex);
-
-    int levels = 1;
-    int w = viewportW, h = viewportH;
-    while ((w > kHiZTargetReadSize || h > kHiZTargetReadSize) && levels < 16) {
-        w = std::max(1, w / 2);
-        h = std::max(1, h / 2);
-        ++levels;
-    }
-    hizLevels = levels;
-    hizReadLevel = levels - 1;
-    hizReadW = std::max(1, viewportW >> hizReadLevel);
-    hizReadH = std::max(1, viewportH >> hizReadLevel);
-
-    for (int lvl = 0; lvl < levels; ++lvl) {
-        int lw = std::max(1, viewportW >> lvl);
-        int lh = std::max(1, viewportH >> lvl);
-        glTexImage2D(GL_TEXTURE_2D, lvl, GL_R32F, lw, lh, 0, GL_RED, GL_FLOAT, nullptr);
-    }
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, levels - 1);
-
-    // 1.0 = far/empty — a conservative "nothing occluded yet" default
-    // until the first real build completes (hizReady stays false until
-    // then regardless, but this avoids the vector holding uninitialized
-    // memory in the meantime).
-    hizReadback.assign(static_cast<size_t>(hizReadW) * hizReadH, 1.0f);
-    hizReady = false;
-    std::cerr << "[occlusion] Hi-Z pyramid (re)sized: " << viewportW << "x" << viewportH
-              << ", " << levels << " levels, CPU readback at "
-              << hizReadW << "x" << hizReadH << std::endl;
-}
-
-void TileGrid::captureAndBuildHiZ(int viewportW, int viewportH) {
-    if (!hizCopyProgram || !hizDownsampleProgram) return; // init failed — disabled
-    resizeHiZIfNeeded(viewportW, viewportH);
-    if (!hizPyramidTex || !hizDepthCaptureTex || !hizFBO) return;
-
-    // This runs at the very end of render(), after all of this frame's
-    // real tile drawing — save every piece of state it touches and
-    // restore it afterward, so nothing later in the frame (text overlay,
-    // etc.) is affected.
-    GLint prevViewport[4];
-    glGetIntegerv(GL_VIEWPORT, prevViewport);
-    GLint prevDrawFBO = 0, prevReadFBO = 0;
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDrawFBO);
-    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevReadFBO);
-    GLboolean depthTestWasEnabled = glIsEnabled(GL_DEPTH_TEST);
-    GLboolean depthMaskWas = GL_TRUE;
-    glGetBooleanv(GL_DEPTH_WRITEMASK, &depthMaskWas);
-    GLint prevProgram = 0;
-    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProgram);
-
-    // Step 1: blit the real depth buffer — the default framebuffer (this
-    // app renders directly to it, never through an intermediate FBO) —
-    // into hizDepthCaptureTex.
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, hizFBO);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                           GL_TEXTURE_2D, hizDepthCaptureTex, 0);
-    GLenum drawBufNone = GL_NONE;
-    glDrawBuffers(1, &drawBufNone); // depth-only target this pass, no color buffer
-    glBlitFramebuffer(0, 0, viewportW, viewportH, 0, 0, viewportW, viewportH,
-                      GL_DEPTH_BUFFER_BIT, GL_NEAREST);
-
-    // Step 2: copy pass — depth texture -> mip 0 of the Hi-Z pyramid.
-    glBindFramebuffer(GL_FRAMEBUFFER, hizFBO);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_2D, hizPyramidTex, 0);
-    GLenum drawBufColor0 = GL_COLOR_ATTACHMENT0;
-    glDrawBuffers(1, &drawBufColor0);
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glViewport(0, 0, viewportW, viewportH);
-    glUseProgram(hizCopyProgram);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, hizDepthCaptureTex);
-    glUniform1i(glGetUniformLocation(hizCopyProgram, "uSrcDepth"), 0);
-    glBindVertexArray(hizFullscreenVAO);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-
-    // Step 3: successive 2x2 max-reduction passes, each sampling the
-    // PREVIOUS Hi-Z mip (never the raw depth texture directly) and
-    // rendering into the next.
-    glUseProgram(hizDownsampleProgram);
-    glBindTexture(GL_TEXTURE_2D, hizPyramidTex);
-    glUniform1i(glGetUniformLocation(hizDownsampleProgram, "uSrcMip"), 0);
-    GLint texelSizeLoc = glGetUniformLocation(hizDownsampleProgram, "uSrcTexelSize");
-    for (int lvl = 1; lvl <= hizReadLevel; ++lvl) {
-        int srcW = std::max(1, viewportW >> (lvl - 1));
-        int srcH = std::max(1, viewportH >> (lvl - 1));
-        int dstW = std::max(1, viewportW >> lvl);
-        int dstH = std::max(1, viewportH >> lvl);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                               GL_TEXTURE_2D, hizPyramidTex, lvl);
-        glViewport(0, 0, dstW, dstH);
-        glUniform2f(texelSizeLoc, 1.0f / srcW, 1.0f / srcH);
-        // Restrict the sampler to read ONLY the source mip for this pass
-        // — we're simultaneously rendering into a DIFFERENT mip of the
-        // same texture, and sampling the full mip range while doing so
-        // (which would include the mip currently being written) is
-        // undefined behavior.
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, lvl - 1);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, lvl - 1);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-    }
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, hizLevels - 1);
-
-    // Step 4: read back JUST the small coarse target level — once per
-    // frame, not per tile (see the class comment for why).
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_2D, hizPyramidTex, hizReadLevel);
-    hizReadback.resize(static_cast<size_t>(hizReadW) * hizReadH);
-    glReadPixels(0, 0, hizReadW, hizReadH, GL_RED, GL_FLOAT, hizReadback.data());
-    hizReady = true;
-
-    // Restore everything.
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prevDrawFBO));
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prevReadFBO));
-    glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
-    if (depthTestWasEnabled) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-    glDepthMask(depthMaskWas);
-    glUseProgram(static_cast<GLuint>(prevProgram));
-    glBindVertexArray(0);
-}
-
-// Tests a tile's world-space AABB against the Hi-Z pyramid BUILT LAST
-// FRAME (see the class comment for why one-frame-stale is the deliberate,
-// safe design here). Returns true only when EVERY corner of the tile's
-// screen-space footprint is provably behind the farthest known depth in
-// its region — i.e. only when culling is certain to be safe, never a
-// guess.
-bool TileGrid::isTileOccludedByHiZ(const Tile& t, const glm::mat4& VP) const {
-    if (!hizReady || hizReadback.empty()) return false; // nothing to test against yet
-
-    glm::vec3 lo = t.glMin, hi = t.glMax;
-    glm::vec3 corners[8] = {
-        {lo.x, lo.y, lo.z}, {hi.x, lo.y, lo.z}, {lo.x, hi.y, lo.z}, {hi.x, hi.y, lo.z},
-        {lo.x, lo.y, hi.z}, {hi.x, lo.y, hi.z}, {lo.x, hi.y, hi.z}, {hi.x, hi.y, hi.z},
-    };
-
-    float minNdcX = 1e30f, maxNdcX = -1e30f, minNdcY = 1e30f, maxNdcY = -1e30f;
-    float nearestNdcZ = 1e30f;
-    for (const auto& c : corners) {
-        glm::vec4 clip = VP * glm::vec4(c, 1.0f);
-        if (clip.w <= 1e-5f) {
-            // Behind the camera or at/near the eye — projecting this
-            // corner to NDC would be meaningless (or blow up). Bail out
-            // of the test entirely rather than risk a wrong cull; just
-            // render the tile normally.
-            return false;
-        }
-        float ndcX = clip.x / clip.w;
-        float ndcY = clip.y / clip.w;
-        float ndcZ = clip.z / clip.w;
-        minNdcX = std::min(minNdcX, ndcX); maxNdcX = std::max(maxNdcX, ndcX);
-        minNdcY = std::min(minNdcY, ndcY); maxNdcY = std::max(maxNdcY, ndcY);
-        nearestNdcZ = std::min(nearestNdcZ, ndcZ); // smaller = nearer (standard depth range)
-    }
-
-    // Fully outside the view frustum in X/Y — not an occlusion question
-    // at all (that's frustum culling, a separate, simpler concern this
-    // function doesn't attempt); don't claim occlusion here, just let it
-    // fall through to the existing frustum/distance-based logic elsewhere.
-    if (maxNdcX < -1.0f || minNdcX > 1.0f || maxNdcY < -1.0f || minNdcY > 1.0f) {
-        return false;
-    }
-
-    // NDC [-1,1] -> depth-buffer [0,1] (standard depth range) -> readback
-    // pixel indices.
-    float depthNear = nearestNdcZ * 0.5f + 0.5f;
-    float u0 = std::clamp(minNdcX * 0.5f + 0.5f, 0.0f, 1.0f);
-    float u1 = std::clamp(maxNdcX * 0.5f + 0.5f, 0.0f, 1.0f);
-    float v0 = std::clamp(minNdcY * 0.5f + 0.5f, 0.0f, 1.0f);
-    float v1 = std::clamp(maxNdcY * 0.5f + 0.5f, 0.0f, 1.0f);
-    int px0 = std::clamp(static_cast<int>(u0 * hizReadW), 0, hizReadW - 1);
-    int px1 = std::clamp(static_cast<int>(u1 * hizReadW), 0, hizReadW - 1);
-    int py0 = std::clamp(static_cast<int>(v0 * hizReadH), 0, hizReadH - 1);
-    int py1 = std::clamp(static_cast<int>(v1 * hizReadH), 0, hizReadH - 1);
-
-    // Farthest known depth across every readback texel the tile's screen
-    // footprint touches — the conservative (MAX) value the whole region
-    // must be farther than for a safe cull.
-    float farthestKnown = 0.0f;
-    for (int py = py0; py <= py1; ++py) {
-        for (int px = px0; px <= px1; ++px) {
-            farthestKnown = std::max(farthestKnown, hizReadback[static_cast<size_t>(py) * hizReadW + px]);
-        }
-    }
-
-    return depthNear > farthestKnown;
-}
-
-void TileGrid::destroyHiZ() {
-    if (hizCopyProgram) { glDeleteProgram(hizCopyProgram); hizCopyProgram = 0; }
-    if (hizDownsampleProgram) { glDeleteProgram(hizDownsampleProgram); hizDownsampleProgram = 0; }
-    if (hizFullscreenVAO) { glDeleteVertexArrays(1, &hizFullscreenVAO); hizFullscreenVAO = 0; }
-    if (hizFBO) { glDeleteFramebuffers(1, &hizFBO); hizFBO = 0; }
-    if (hizDepthCaptureTex) { glDeleteTextures(1, &hizDepthCaptureTex); hizDepthCaptureTex = 0; }
-    if (hizPyramidTex) { glDeleteTextures(1, &hizPyramidTex); hizPyramidTex = 0; }
-    hizReady = false;
 }
 
 // ===========================================================================
@@ -589,8 +317,26 @@ void TileGrid::uploadTile(Tile& t, LoadResult& r) {
     glBindBuffer(GL_ARRAY_BUFFER, t.vboCol);
     glBufferData(GL_ARRAY_BUFFER, r.colors.size() * sizeof(float),
                  r.colors.data(), GL_STATIC_DRAW);
+    if (!r.orthoColors.empty()) {
+        glGenBuffers(1, &t.vboOrthoCol);
+        glBindBuffer(GL_ARRAY_BUFFER, t.vboOrthoCol);
+        glBufferData(GL_ARRAY_BUFFER, r.orthoColors.size() * sizeof(float),
+                     r.orthoColors.data(), GL_STATIC_DRAW);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, (useOrthoColors && t.vboOrthoCol) ? t.vboOrthoCol : t.vboCol);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glBindVertexArray(0);
+}
+
+void TileGrid::setUseOrthoColors(bool useOrtho) {
+    useOrthoColors = useOrtho;
+    for (Tile& t : tiles) {
+        if (!t.vao) continue;
+        glBindVertexArray(t.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, (useOrtho && t.vboOrthoCol) ? t.vboOrthoCol : t.vboCol);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    }
     glBindVertexArray(0);
 }
 
@@ -662,41 +408,46 @@ void TileGrid::update(const glm::vec3& camPos, float fov, float viewportH) {
 }
 
 // ===========================================================================
-// render: draw all loaded tiles with per-tile density uniforms.
+// render: draw loaded tiles, skipping those outside the frustum or hidden
+// behind last frame's depth.
 // ===========================================================================
 
-void TileGrid::render(GLuint pointProgram, const glm::mat4& V, const glm::mat4& P,
-                      const glm::vec3& camPos, float fov, float viewportW, float viewportH,
-                      float zScale, float pointSizeMul, bool useOcclusion) {
-    (void)camPos;
-    glUseProgram(pointProgram);
-    glUniformMatrix4fv(glGetUniformLocation(pointProgram, "uView"), 1, GL_FALSE, glm::value_ptr(V));
-    glUniformMatrix4fv(glGetUniformLocation(pointProgram, "uProj"), 1, GL_FALSE, glm::value_ptr(P));
-    glUniform1f(glGetUniformLocation(pointProgram, "uViewportH"), viewportH);
-    glUniform1f(glGetUniformLocation(pointProgram, "uZScale"), zScale);
-    glUniform1f(glGetUniformLocation(pointProgram, "uTanHalfFov"),
-                std::tan(glm::radians(fov) * 0.5f));
-    glUniform1f(glGetUniformLocation(pointProgram, "uDisableSubsampling"), 0.0f);
-    glUniform1f(glGetUniformLocation(pointProgram, "uOrtho"), 0.0f);
-    glUniform1f(glGetUniformLocation(pointProgram, "uPointSize"), 0.0015f * pointSizeMul);
-    glUniform1f(glGetUniformLocation(pointProgram, "uTargetPixelSpacing"), 2.83f);
-    glUniform1f(glGetUniformLocation(pointProgram, "uDensityMul"), 1.0f);
-    GLint densityLoc = glGetUniformLocation(pointProgram, "uDensity");
+void TileGrid::render(const RenderContext& ctx) {
+    const ViewSettings& vs = *ctx.settings;
+    GLuint prog = ctx.programs->point;
+    glUseProgram(prog);
+    glUniformMatrix4fv(glGetUniformLocation(prog, "uView"), 1, GL_FALSE, glm::value_ptr(ctx.view));
+    glUniformMatrix4fv(glGetUniformLocation(prog, "uProj"), 1, GL_FALSE, glm::value_ptr(ctx.proj));
+    glUniform1f(glGetUniformLocation(prog, "uViewportH"), ctx.viewportH);
+    glUniform1f(glGetUniformLocation(prog, "uZScale"), vs.zScale);
+    glUniform1f(glGetUniformLocation(prog, "uTanHalfFov"), std::tan(glm::radians(ctx.fovDeg) * 0.5f));
+    glUniform1f(glGetUniformLocation(prog, "uDisableSubsampling"), 0.0f);
+    glUniform1f(glGetUniformLocation(prog, "uOrtho"), ctx.ortho ? 1.0f : 0.0f);
+    glUniform1f(glGetUniformLocation(prog, "uOrthoHeight"), ctx.orthoHeight);
+    glUniform1f(glGetUniformLocation(prog, "uPointSize"), 0.0015f * vs.pointSizeMul);
+    glUniform1f(glGetUniformLocation(prog, "uTargetPixelSpacing"), 2.83f);
+    glUniform1f(glGetUniformLocation(prog, "uDensityMul"), vs.pointDensityMul);
+    GLint densityLoc = glGetUniformLocation(prog, "uDensity");
 
-    glm::mat4 VP = P * V;
+    glm::mat4 VP = ctx.proj * ctx.view;
+    bool occlusion = vs.useOcclusion && ctx.hiz && ctx.hiz->ready();
+    drawnTiles = drawnPoints = culledTiles = 0;
     for (Tile& t : tiles) {
         if (!t.hasGeometry()) continue;
-        if (useOcclusion && isTileOccludedByHiZ(t, VP)) continue;
+        glm::vec3 lo = t.glMin, hi = t.glMax;
+        lo.y *= vs.zScale;
+        hi.y *= vs.zScale;
+        if (aabbOutsideFrustum(lo, hi, VP) || (occlusion && ctx.hiz->isOccluded(lo, hi, VP))) {
+            ++culledTiles;
+            continue;
+        }
         float tileDensity = (t.pointSpacing > 1e-10f)
             ? 1.0f / (t.pointSpacing * t.pointSpacing) : 1e15f;
         glUniform1f(densityLoc, tileDensity);
         glBindVertexArray(t.vao);
         glDrawArrays(GL_POINTS, 0, t.pointCount);
+        ++drawnTiles;
+        drawnPoints += static_cast<size_t>(t.pointCount);
     }
     glBindVertexArray(0);
-
-    // Build next frame's Hi-Z from this frame's depth.
-    if (useOcclusion) {
-        captureAndBuildHiZ(static_cast<int>(viewportW), static_cast<int>(viewportH));
-    }
 }

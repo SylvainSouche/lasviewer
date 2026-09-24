@@ -1,14 +1,16 @@
 // point_cloud.h — LAZ/LAS point cloud loading via PDAL
 #pragma once
 #include "gl_platform.h"
+#include "scene_frame.h"
 #include <glm/glm.hpp>
 #include <string>
 #include <vector>
 #include <cstdint>
 
 struct PointCloud {
-    std::vector<float> positions;
-    std::vector<float> colors;
+    std::vector<float> positions;   // GL space, 3 floats/point
+    std::vector<float> colors;      // file RGB, or elevation ramp
+    bool hasRGB = false;
     std::vector<float> orthoColors;
     bool hasOrthoColors = false;
     size_t pointCount = 0;
@@ -20,14 +22,14 @@ struct PointCloud {
     float glDensity = 1.0f;
 };
 
-// Load a LAZ/LAS/COPC point cloud (full load, not streaming).
-bool loadPointCloud(const std::string& path, PointCloud& cloud);
+// Load a LAZ/LAS/COPC point cloud in full, into the given scene frame.
+// Clouds over 2M points are thinned on an XY grid.
+bool loadPointCloud(const std::string& path, const SceneFrame& frame, PointCloud& cloud);
 
-// Get bbox from header only (no point data loaded).
-bool getCloudBounds(const std::string& path,
-                    double& minX, double& minY, double& minZ,
-                    double& maxX, double& maxY, double& maxZ);
-
-// Upload point cloud to GPU. Returns VAO, writes color VBO to outColorVBO.
-GLuint uploadPointCloudGL(const PointCloud& cloud, bool useOrthoColors,
-                          GLuint* outColorVBO = nullptr);
+struct CloudHeader {
+    WorldBounds bounds;   // hasZ = true
+    uint64_t pointCount = 0;
+    int epsg = 0;         // horizontal CRS, 0 = unknown
+};
+// Header-only read (no points loaded, except as a fallback for bounds).
+bool readCloudHeader(const std::string& path, CloudHeader& out);

@@ -16,9 +16,11 @@
 #   make help       show available targets
 #
 # OS support:
-#   macOS (MacPorts):  sudo port install glfw pdal tiff glm pkgconfig freetype
-#   macOS (Homebrew):  brew install glfw pdal libtiff glm pkg-config freetype
-#   Linux (apt):       sudo apt install libglfw3-dev libpdal-dev libtiff-dev libglm-dev libfreetype-dev
+#   macOS (MacPorts):  sudo port install glfw pdal tiff glm pkgconfig
+#   macOS (Homebrew):  brew install glfw pdal libtiff glm pkg-config
+#   Linux (apt):       sudo apt install libglfw3-dev libpdal-dev libtiff-dev libglm-dev
+#
+# Dear ImGui is vendored in third_party/imgui (no install needed).
 
 # ===========================================================================
 # OS detection (lightweight — no errors here, deferred to build target)
@@ -83,20 +85,24 @@ endif
 # Used only for reprojectToMatchCRS() in geotiff.cpp — automatically
 # reprojecting an orthophoto into the DEM's CRS when they differ (see
 # docs/design-tessellation-displacement.md). Genuinely optional, unlike
-# freetype/glfw/tiff/pdal above: without it, a CRS mismatch is still
+# glfw/tiff/pdal above: without it, a CRS mismatch is still
 # DETECTED and reported (readEPSGCode()), just not automatically
 # corrected — falls back to the existing "skip texturing, warn, suggest
 # gdalwarp" behavior (§6r), so this app builds and runs fully without
 # PROJ, just without the automatic-reprojection convenience.
-PROJ_TEST := $(shell pkg-config --exists proj 2>/dev/null && echo yes || echo no)
+# MacPorts keeps PROJ's .pc in a versioned prefix; prefer proj9, the version
+# GDAL (and so PDAL) already loads.
+PROJ_PC_PATH := $(firstword $(wildcard /opt/local/lib/proj9/lib/pkgconfig /opt/local/lib/proj8/lib/pkgconfig))
+PROJ_PKGCONFIG := PKG_CONFIG_PATH="$(PROJ_PC_PATH)$(if $(PKG_CONFIG_PATH),:$(PKG_CONFIG_PATH))" pkg-config
+PROJ_TEST := $(shell $(PROJ_PKGCONFIG) --exists proj 2>/dev/null && echo yes || echo no)
 ifeq ($(PROJ_TEST),yes)
   CXXFLAGS += -DLASVIEWER_HAS_PROJ
-  PROJ_CFLAGS := $(shell pkg-config --cflags proj 2>/dev/null)
-  PROJ_LDFLAGS := $(shell pkg-config --libs proj 2>/dev/null)
+  PROJ_CFLAGS := $(shell $(PROJ_PKGCONFIG) --cflags proj 2>/dev/null)
+  PROJ_LDFLAGS := $(shell $(PROJ_PKGCONFIG) --libs proj 2>/dev/null)
 else
   PROJ_CFLAGS :=
   PROJ_LDFLAGS :=
-  $(info [config] PROJ not found (pkg-config proj) — CRS mismatches will be reported but not auto-reprojected. Install PROJ (e.g. `brew install proj` / `port install proj`) and rebuild to enable automatic reprojection.)
+  $(info [config] PROJ not found (pkg-config proj) — CRS mismatches will be reported but not auto-reprojected. Install PROJ (e.g. `brew install proj` / `port install proj9`) and rebuild to enable automatic reprojection.)
 endif
 
 # ===========================================================================
@@ -106,11 +112,18 @@ endif
 TARGET    := lasviewer
 SRC       := main.cpp
 SRC_DIR   := src
-SOURCES   := $(SRC) $(wildcard $(SRC_DIR)/*.cpp)
+IMGUI_DIR := third_party/imgui
+IMGUI_SOURCES := $(addprefix $(IMGUI_DIR)/,imgui.cpp imgui_draw.cpp imgui_tables.cpp \
+                 imgui_widgets.cpp imgui_demo.cpp imgui_impl_glfw.cpp imgui_impl_opengl3.cpp)
+SOURCES   := $(SRC) $(wildcard $(SRC_DIR)/*.cpp) $(IMGUI_SOURCES)
 OBJ_DIR   := .build/obj
 OBJECTS   := $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(SOURCES))
 TEST_SRC  := tests/test_basic.cpp
 TEST_BIN  := .build/test_runner
+SCENE_TEST_SRC := tests/test_scene.cpp $(SRC_DIR)/camera.cpp $(SRC_DIR)/camera_controller.cpp
+SCENE_TEST_BIN := .build/test_scene
+# Header-only deps of the scene tests (glm, GLFW key constants).
+TEST_INC  := $(firstword $(foreach d,/opt/local /opt/homebrew /usr/local /usr,$(if $(wildcard $(d)/include/glm/glm.hpp),$(d)/include)))
 BUILD_DIR := .build
 
 # ===========================================================================
@@ -142,7 +155,7 @@ define detect_libs
     PORTS := /usr/local
     PKG_MANAGER := system
   else
-    $$(error "GLFW not found. Install: sudo port install glfw pdal tiff glm pkgconfig freetype (MacPorts) OR brew install glfw pdal libtiff glm pkg-config freetype (Homebrew) OR sudo apt install libglfw3-dev libpdal-dev libtiff-dev libglm-dev libfreetype-dev (Linux)")
+    $$(error "GLFW not found. Install: sudo port install glfw pdal tiff glm pkgconfig (MacPorts) OR brew install glfw pdal libtiff glm pkg-config (Homebrew) OR sudo apt install libglfw3-dev libpdal-dev libtiff-dev libglm-dev (Linux)")
   endif
 endef
 
@@ -182,16 +195,26 @@ debug:
 # glm header is not something we can or should fix here. Only our own
 # code's include paths (-I. -I$(SRC_DIR)) stay as plain -I, so warnings in
 # main.cpp/src/*.cpp still show up normally.
+$(OBJ_DIR)/$(IMGUI_DIR)/%.o: $(IMGUI_DIR)/%.cpp | $(OBJ_DIR) .build/config.mk
+	@echo "[cc] $<"
+	@mkdir -p $(dir $@)
+	@$(CXX) -std=c++17 $(if $(findstring -g,$(CXXFLAGS)),-g,-O2) -w -I$(IMGUI_DIR) -isystem $(PORTS)/include \
+	        $(if $(filter macos,$(OS)),-DGL_SILENCE_DEPRECATION,) -c $< -o $@
+
 $(OBJ_DIR)/%.o: %.cpp | $(OBJ_DIR) .build/config.mk
 	@echo "[cc] $<"
-	@CXXFLAGS_OBJ="$(CXXFLAGS) -I. -I$(SRC_DIR) -isystem $(PORTS) -isystem $(PORTS)/include $$(pkg-config --cflags freetype2 2>/dev/null | sed 's/-I/-isystem /g')"; \
+	@mkdir -p $(dir $@)
+	@CXXFLAGS_OBJ="$(CXXFLAGS) -I. -I$(SRC_DIR) -isystem $(IMGUI_DIR) -isystem $(PORTS) -isystem $(PORTS)/include"; \
 	if [ "$(OS)" = "macos" ]; then \
 	        CXXFLAGS_OBJ="$$CXXFLAGS_OBJ -DGL_SILENCE_DEPRECATION"; \
 	fi; \
 	GLM_CFLAGS=$$(pkg-config --cflags glm 2>/dev/null | sed 's/-I/-isystem /g'); \
 	if [ -z "$$GLM_CFLAGS" ]; then GLM_CFLAGS="-isystem $(PORTS)/include"; fi; \
 	PDAL_CFLAGS=$$(pkg-config --cflags pdal 2>/dev/null | sed 's/-I/-isystem /g'); \
-	$(CXX) $$CXXFLAGS_OBJ $$GLM_CFLAGS $$PDAL_CFLAGS $(PROJ_CFLAGS) -c $< -o $@
+	$(CXX) $$CXXFLAGS_OBJ $$GLM_CFLAGS $$PDAL_CFLAGS $(PROJ_CFLAGS) -MMD -MP -c $< -o $@
+
+# Header dependencies generated by -MMD.
+-include $(OBJECTS:.o=.d)
 
 $(OBJ_DIR):
 	@mkdir -p $(OBJ_DIR)/$(SRC_DIR)
@@ -225,7 +248,7 @@ _link_final: $(OBJECTS)
 	PDAL_LIBS=$$(pkg-config --libs pdal 2>/dev/null); \
 	if [ -z "$$PDAL_LIBS" ]; then PDAL_LIBS="-L$(PORTS)/lib -lPDAL"; fi; \
 	$(CXX) $(OBJECTS) -o $(TARGET) \
-	        $$PDAL_LIBS $$GL_LIBS -L$(PORTS)/lib -lglfw -ltiff -lfreetype $(OMP_LDFLAGS) $(PROJ_LDFLAGS) \
+	        $$PDAL_LIBS $$GL_LIBS -L$(PORTS)/lib -lglfw -ltiff $(OMP_LDFLAGS) $(PROJ_LDFLAGS) \
 	        -Wl,-rpath,$(PORTS)/lib || true
 	@if [ -f $(TARGET) ]; then echo "[build] done: ./$(TARGET)"; fi
 
@@ -236,9 +259,14 @@ run: build
 # Test target (no external deps needed)
 # ===========================================================================
 
-test: $(TEST_BIN)
+test: $(TEST_BIN) $(SCENE_TEST_BIN)
 	@echo "[test] running unit tests..."
 	@./$(TEST_BIN)
+	@./$(SCENE_TEST_BIN)
+
+$(SCENE_TEST_BIN): $(SCENE_TEST_SRC) $(wildcard $(SRC_DIR)/*.h) | $(BUILD_DIR)
+	@echo "[test] compiling tests/test_scene.cpp..."
+	$(CXX) -std=c++17 -O1 -Wall -Wextra -isystem $(TEST_INC) $(SCENE_TEST_SRC) -o $(SCENE_TEST_BIN)
 
 $(TEST_BIN): $(TEST_SRC) | $(BUILD_DIR)
 	@echo "[test] compiling $(TEST_SRC)..."
@@ -301,6 +329,7 @@ dist:
 	@mkdir -p /tmp/$(DIST_NAME)/src /tmp/$(DIST_NAME)/tests /tmp/$(DIST_NAME)/docs
 	@cp $(SRC) Makefile README.md LICENSE.md specs.md .clang-tidy .clang-format /tmp/$(DIST_NAME)/
 	@cp src/*.cpp src/*.h /tmp/$(DIST_NAME)/src/
+	@mkdir -p /tmp/$(DIST_NAME)/third_party && cp -R $(IMGUI_DIR) /tmp/$(DIST_NAME)/third_party/
 	@cp tests/*.cpp /tmp/$(DIST_NAME)/tests/
 	@cp docs/Doxyfile /tmp/$(DIST_NAME)/docs/
 	@cp docs/*.md /tmp/$(DIST_NAME)/docs/ 2>/dev/null || true
@@ -361,9 +390,9 @@ help:
 	@echo "  Version:   $(VERSION)"
 	@echo ""
 	@echo "Install deps:"
-	@echo "  macOS (MacPorts): sudo port install glfw pdal tiff glm pkgconfig freetype"
-	@echo "  macOS (Homebrew): brew install glfw pdal libtiff glm pkg-config freetype"
-	@echo "  Linux (apt):      sudo apt install libglfw3-dev libpdal-dev libtiff-dev libglm-dev libfreetype-dev"
+	@echo "  macOS (MacPorts): sudo port install glfw pdal tiff glm pkgconfig"
+	@echo "  macOS (Homebrew): brew install glfw pdal libtiff glm pkg-config"
+	@echo "  Linux (apt):      sudo apt install libglfw3-dev libpdal-dev libtiff-dev libglm-dev"
 	@echo ""
 	@echo "OpenMP note: Apple's default clang (/usr/bin/clang++) does NOT support OpenMP."
 	@echo "  For multi-threaded loading: make CXX_OVERRIDE=clang-mp-19  (MacPorts)"

@@ -1,14 +1,9 @@
-// point_cloud.cpp — LAZ/LAS point cloud loader (PDAL) + GPU upload.
+// point_cloud.cpp — LAZ/LAS point cloud loading (PDAL).
 //
-// Implements:
-//   - loadPointCloud()      : full LAZ/LAS load with bbox recentering, RGB /
-//                             elevation-gradient coloring, and spatial grid
-//                             subsampling for very large clouds.
-//   - getCloudBounds()      : read header-only bbox for COPC streaming.
-//   - uploadPointCloudGL()  : upload positions + colors to GPU VBOs.
+//   - loadPointCloud()  : full load into the scene frame, RGB or elevation
+//                         colors, XY-grid thinning for very large clouds.
+//   - readCloudHeader() : header-only bounds, point count, CRS.
 #include "point_cloud.h"
-// GLFW/OpenGL headers now come from point_cloud.h -> gl_platform.h (see
-// that file for why this used to be a fragile per-file ad-hoc block).
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -20,6 +15,7 @@
 #include <pdal/Stage.hpp>
 #include <pdal/Dimension.hpp>
 #include <pdal/Metadata.hpp>
+#include <pdal/SpatialReference.hpp>
 
 #include <iostream>
 #include <cmath>
@@ -65,7 +61,7 @@ static glm::vec3 elevationColor(double z, double zMin, double zRange) {
 // LAZ/LAS loader (PDAL)
 // ---------------------------------------------------------------------------
 
-bool loadPointCloud(const std::string& path, PointCloud& cloud) {
+bool loadPointCloud(const std::string& path, const SceneFrame& frame, PointCloud& cloud) {
     pdal::StageFactory factory;
     std::string driver = factory.inferReaderDriver(path);
     if (driver.empty()) {
@@ -125,10 +121,9 @@ bool loadPointCloud(const std::string& path, PointCloud& cloud) {
 
     cloud.bboxMin = bmin;
     cloud.bboxMax = bmax;
-    cloud.worldCenter = (bmin + bmax) * 0.5;
-    glm::dvec3 diag = bmax - bmin;
-    cloud.worldScale = glm::length(diag);
-    if (cloud.worldScale < 1e-9) cloud.worldScale = 1.0;
+    cloud.worldCenter = frame.center;
+    cloud.worldScale = frame.scale;
+    cloud.hasRGB = hasRGB;
 
     // Second pass: recenter + rescale, build colors (RGB or elevation gradient).
     cloud.pointCount = rawPos.size() / 3;
@@ -136,8 +131,8 @@ bool loadPointCloud(const std::string& path, PointCloud& cloud) {
     cloud.colors.resize(rawPos.size());
 
     double invScale = 1.0 / cloud.worldScale;
-    double zMin = bmin.z, zMax = bmax.z;
-    double zRange = (zMax - zMin > 1e-9) ? (zMax - zMin) : 1.0;
+    double zMin = frame.zMin;
+    double zRange = std::max(frame.zMax - frame.zMin, 1e-9);
 
     for (size_t i = 0; i < cloud.pointCount; ++i) {
         double wx = rawPos[i * 3 + 0];
@@ -232,7 +227,7 @@ bool loadPointCloud(const std::string& path, PointCloud& cloud) {
         }
         cloud.positions = std::move(tmpPos);
         cloud.colors = std::move(tmpCol);
-        std::cout << "  spatial subsample: " << cloud.pointCount << " -> " << outIdx
+        std::cerr << "  spatial subsample: " << cloud.pointCount << " -> " << outIdx
                   << " (grid " << gridX << "x" << gridY
                   << ", cellSize=" << cellSize << "m)" << std::endl;
         cloud.pointCount = outIdx;
@@ -264,7 +259,7 @@ bool loadPointCloud(const std::string& path, PointCloud& cloud) {
             : 1.0f;
     }
 
-    std::cout << "Loaded " << cloud.pointCount << " points from " << path << "\n"
+    std::cerr << "Loaded " << cloud.pointCount << " points from " << path << "\n"
               << "  bbox: (" << bmin.x << ", " << bmin.y << ", " << bmin.z << ")"
               << " -> (" << bmax.x << ", " << bmax.y << ", " << bmax.z << ")\n"
               << "  RGB: " << (hasRGB ? "yes" : "no (using elevation gradient)") << std::endl;
@@ -272,12 +267,10 @@ bool loadPointCloud(const std::string& path, PointCloud& cloud) {
 }
 
 // ---------------------------------------------------------------------------
-// Get bbox of a LAS/LAZ/COPC file without loading all points.
+// Header-only read: bounds, point count, CRS.
 // ---------------------------------------------------------------------------
 
-bool getCloudBounds(const std::string& path,
-                    double& minX, double& minY, double& minZ,
-                    double& maxX, double& maxY, double& maxZ) {
+bool readCloudHeader(const std::string& path, CloudHeader& out) {
     pdal::StageFactory factory;
     std::string driver = factory.inferReaderDriver(path);
     if (driver.empty()) return false;
@@ -289,78 +282,52 @@ bool getCloudBounds(const std::string& path,
     pdal::PointTable table;
     reader->prepare(table);
 
+    try {
+        pdal::SpatialReference srs = reader->getSpatialReference();
+        if (srs.empty()) srs = table.anySpatialReference();
+        if (!srs.empty()) {
+            std::string code = srs.identifyHorizontalEPSG();
+            if (!code.empty()) out.epsg = std::stoi(code);
+        }
+    } catch (const std::exception&) {
+        out.epsg = 0;
+    }
+
     pdal::MetadataNode meta = table.metadata();
+    pdal::MetadataNode reader_meta = meta.findChild(driver);
+    pdal::MetadataNode countNode = meta.findChild("count");
+    if (countNode.empty() && !reader_meta.empty()) countNode = reader_meta.findChild("count");
+    if (!countNode.empty()) {
+        try { out.pointCount = std::stoull(countNode.value()); } catch (const std::exception&) {}
+    }
+
     pdal::MetadataNode boundsNode = meta.findChild("bounds");
     if (!boundsNode.empty()) {
         try {
-            minX = std::stod(boundsNode.findChild("minx").value());
-            maxX = std::stod(boundsNode.findChild("maxx").value());
-            minY = std::stod(boundsNode.findChild("miny").value());
-            maxY = std::stod(boundsNode.findChild("maxy").value());
-            minZ = std::stod(boundsNode.findChild("minz").value());
-            maxZ = std::stod(boundsNode.findChild("maxz").value());
+            out.bounds.extendXY(std::stod(boundsNode.findChild("minx").value()),
+                                std::stod(boundsNode.findChild("miny").value()),
+                                std::stod(boundsNode.findChild("maxx").value()),
+                                std::stod(boundsNode.findChild("maxy").value()));
+            out.bounds.extendZ(std::stod(boundsNode.findChild("minz").value()),
+                               std::stod(boundsNode.findChild("maxz").value()));
             return true;
         } catch (const std::exception& e) {
             std::cerr << "WARNING: could not parse PDAL bounds metadata (" << e.what()
-                      << ") — falling back to a manual point scan" << std::endl;
-            // Fall through to the manual scan below.
+                      << ") — scanning points instead" << std::endl;
         }
     }
-    {
-        // Fallback: execute with a minimal read to get bounds. Reached either
-        // when PDAL has no "bounds" metadata node, or when the node's values
-        // failed to parse as doubles (malformed/corrupt metadata).
-        pdal::PointViewSet views = reader->execute(table);
-        if (views.empty()) return false;
-        bool first = true;
-        for (const auto& view : views) {
-            for (pdal::PointId i = 0; i < view->size(); ++i) {
-                double x = view->getFieldAs<double>(pdal::Dimension::Id::X, i);
-                double y = view->getFieldAs<double>(pdal::Dimension::Id::Y, i);
-                double z = view->getFieldAs<double>(pdal::Dimension::Id::Z, i);
-                if (first) { minX=maxX=x; minY=maxY=y; minZ=maxZ=z; first=false; }
-                else {
-                    if (x<minX) minX=x; if (x>maxX) maxX=x;
-                    if (y<minY) minY=y; if (y>maxY) maxY=y;
-                    if (z<minZ) minZ=z; if (z>maxZ) maxZ=z;
-                }
-            }
+    // Fallback: read every point.
+    pdal::PointViewSet views = reader->execute(table);
+    uint64_t n = 0;
+    for (const auto& view : views) {
+        for (pdal::PointId i = 0; i < view->size(); ++i, ++n) {
+            double x = view->getFieldAs<double>(pdal::Dimension::Id::X, i);
+            double y = view->getFieldAs<double>(pdal::Dimension::Id::Y, i);
+            double z = view->getFieldAs<double>(pdal::Dimension::Id::Z, i);
+            out.bounds.extendXY(x, y, x, y);
+            out.bounds.extendZ(z, z);
         }
-        return !first;
     }
-}
-
-// ---------------------------------------------------------------------------
-// OpenGL upload helper
-// ---------------------------------------------------------------------------
-
-GLuint uploadPointCloudGL(const PointCloud& cloud, bool useOrthoColors,
-                          GLuint* outColorVBO) {
-    GLuint vao;
-    glGenVertexArrays(1, &vao);
-    glBindVertexArray(vao);
-
-    GLuint vboPos;
-    glGenBuffers(1, &vboPos);
-    glBindBuffer(GL_ARRAY_BUFFER, vboPos);
-    glBufferData(GL_ARRAY_BUFFER,
-                 cloud.positions.size() * sizeof(float),
-                 cloud.positions.data(), GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-
-    GLuint vboCol;
-    glGenBuffers(1, &vboCol);
-    glBindBuffer(GL_ARRAY_BUFFER, vboCol);
-    const std::vector<float>& colBuf =
-        (useOrthoColors && cloud.hasOrthoColors) ? cloud.orthoColors : cloud.colors;
-    glBufferData(GL_ARRAY_BUFFER,
-                 colBuf.size() * sizeof(float),
-                 colBuf.data(), GL_STATIC_DRAW);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-
-    glBindVertexArray(0);
-    if (outColorVBO) *outColorVBO = vboCol;
-    return vao;
+    out.pointCount = n;
+    return n > 0;
 }

@@ -31,8 +31,8 @@ float Camera::orthoHeight() const {
 // Converts a Normalized Device Coordinate point (each component in
 // [-1, 1], with ndcZ derived from a depth-buffer sample as
 // `depth * 2.0 - 1.0`) back to a world-space GL position. Used for
-// double-click-to-focus picking — see gl_app.h's InputState::pickRequested
-// and main.cpp's render loop for how ndcZ is obtained via glReadPixels.
+// double-click-to-focus picking — see ViewerApp::handlePick() for how ndcZ
+// is obtained via glReadPixels.
 glm::vec3 Camera::unproject(float ndcX, float ndcY, float ndcZ) const {
     glm::mat4 invVP = glm::inverse(proj() * view());
     glm::vec4 clip(ndcX, ndcY, ndcZ, 1.0f);

@@ -124,37 +124,9 @@ void main() {
 }
 )GLSL";
 
-// Mesh shader: textured triangles for DEM surface.
-// Supports 3 color modes:
-//   uHasTexture == 1 : sample orthophoto texture
-//   uHasTexture == 0 : elevation-based color ramp (dark blue-violet -> teal -> yellow)
-const char* kMeshVert = R"GLSL(
-#version 330 core
-layout (location = 0) in vec3 aPos;
-layout (location = 1) in vec2 aUV;
-uniform mat4 uView;
-uniform mat4 uProj;
-uniform float uZScale;
-out vec2 vUV;
-out float vElev;
-out float vEdgeDist;
-void main() {
-    vec3 p = aPos;
-    p.y *= uZScale;
-    gl_Position = uProj * uView * vec4(p, 1.0);
-    vUV = aUV;
-    vElev = aPos.y;  // GL Y = elevation (before zScale)
-    // DEMMesh (this path) has no per-patch parametric (u,v) coordinate at
-    // the vertex-shader stage — it's a single, already-fully-triangulated
-    // static mesh, not built from GPU-tessellated patches. 1.0 ("far from
-    // any edge") means the master-edge red highlight in kMeshFrag never
-    // triggers here; that visualization is specific to the GPU-tessellated
-    // DEMTessMesh path (kMeshTessEval), where "coarse patch edge" is a
-    // meaningful, distinct concept from the rendered triangle edges.
-    vEdgeDist = 1.0;
-}
-)GLSL";
-
+// DEM surface fragment shader (fed by kMeshTessEval).
+//   uHasTexture == 1 : sample the orthophoto texture
+//   uHasTexture == 0 : elevation color ramp (dark blue-violet -> teal -> yellow)
 const char* kMeshFrag = R"GLSL(
 #version 330 core
 in vec2 vUV;
@@ -165,14 +137,11 @@ uniform sampler2D uTexture;
 uniform int uHasTexture;
 uniform float uMinElev;
 uniform float uMaxElev;
-uniform int uShowMasterEdges; // G key (main.cpp) — default OFF; this is a
-                              // diagnostic overlay, not a rendering feature,
-                              // so it shouldn't be in the way unless asked for
+uniform int uShowMasterEdges; // G key / DEM "Patch edges" — diagnostic, off by default
 
 void main() {
     // Master (coarse patch) edges — see vEdgeDist's producer in
-    // kMeshTessEval for the GPU-tessellated DEM path, and kMeshVert above
-    // for why this never triggers on the CPU-only DEMMesh path. Drawn in
+    // kMeshTessEval. Drawn in
     // place of the orthophoto/elevation-ramp color, not blended over it,
     // so the boundary is unambiguous. MASTER_EDGE_THRESHOLD is in the
     // same parametric [0, 0.5] units as vEdgeDist (0 = exactly on an
@@ -215,8 +184,7 @@ void main() {
 //        -> kMeshTessControl (TCS: per-edge tessellation level)
 //        -> kMeshTessEval (TES: bilinear-interpolates position/normal/UV,
 //           samples the heightmap, displaces along the interpolated normal)
-//        -> kMeshFrag (REUSED UNCHANGED — TES outputs the same vUV/vElev
-//           interface kMeshVert does).
+//        -> kMeshFrag
 //
 // SECOND REVISION — crack avoidance split by tessellation-level type, since
 // only OUTER (edge) levels can ever cause a crack; INNER (interior) is
