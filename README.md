@@ -41,7 +41,7 @@ brew install glfw pdal gdal glm pkg-config bmake
 sudo apt install libglfw3-dev libpdal-dev libgdal-dev libglm-dev pkg-config bmake
 ```
 
-GDAL is also a PDAL dependency, so it's normally installed already. Dear ImGui is vendored in `ImGui/` (v1.91.9b, MIT), so there's nothing to install for it. ATF and Kyua are needed only for `bmake test`.
+GDAL is also a PDAL dependency, so it's normally installed already. Dear ImGui is vendored in `GUI/` (v1.91.9b, MIT), so there's nothing to install for it. ATF and Kyua are needed only for `bmake test`.
 
 The build uses [bmake-it](https://github.com/SylvainSouche/bmake-it), a BSD-make build system. Get it once and let bmake find its `mk/` files:
 
@@ -127,7 +127,7 @@ pdal translate cloud.copc.laz dsm.tif --readers.copc.resolution=0.5 \
 
 ## Build System
 
-The build is [bmake-it](https://github.com/SylvainSouche/bmake-it): a workspace (this directory) of frameworks, each holding modules (`*.m`). External libraries are ordinary frameworks whose library module imports the installed library (`IMPORT=`) instead of compiling it, so they're used exactly like the project's own libraries.
+The build is [bmake-it](https://github.com/SylvainSouche/bmake-it): a workspace (this directory) of frameworks, each holding modules (`*.m`). Third-party libraries are grouped by subject in two frameworks, `GIS` and `GUI`, one module per library. An external library's module imports the installed library (`IMPORT=`) instead of compiling it, so it's used exactly like the project's own libraries.
 
 ```bash
 bmake                 # build everything for the host (build/<os>-<arch>/)
@@ -139,14 +139,14 @@ cd Geo && bmake       # build / test one framework (or one module: cd Geo/libgeo
 
 | Framework | Contents | Notes |
 |---|---|---|
-| `PDAL`, `GDAL`, `GLFW`, `GLM` | imported libraries | headers staged from the install; GLM is header-only |
-| `ImGui` | Dear ImGui, compiled (`libimgui.a`) | vendored source, warnings off |
+| `GIS` | PDAL, GDAL, glm, imported | headers staged from the install; glm is header-only |
+| `GUI` | GLFW imported; Dear ImGui compiled (`libimgui.a`) | ImGui is vendored source, warnings off |
 | `Geo` | `libgeo.a`: point-cloud (PDAL) and raster (GDAL) I/O | no OpenGL; `raster_test` |
 | `Viewer` | the `lasviewer` program | `basic_test`, `scene_test` |
 
 Headers follow bmake-it's visibility rules: `<fw>/include/` is public (reached through `PREREQS=`), `<fw>/local/include/` is shared by that framework's modules, `<module>/include/` is private.
 
-Per-target settings live in `mk/` hook files next to the module, for example `Viewer/lasviewer.m/mk/local.macos.mk` (OpenGL frameworks) or `GLM/libglm.m/mk/pre.macos.mk` (where glm's headers are).
+Per-target settings live in `mk/` hook files next to the module, for example `Viewer/lasviewer.m/mk/local.macos.mk` (OpenGL frameworks) or `GIS/libglm.m/mk/pre.macos.mk` (where glm's headers are).
 
 `GNUmakefile` (plain GNU make, `make build`) builds the same binary from the same tree; it is kept temporarily, for comparison.
 
@@ -158,8 +158,8 @@ Per-target settings live in `mk/` hook files next to the module, for example `Vi
 
 ```
 makefile                     bmake-it workspace
-PDAL/ GDAL/ GLFW/ GLM/       imported libraries (IMPORT= modules, mk/ hooks)
-ImGui/                       Dear ImGui: include/ (public), libimgui.m/src/
+GIS/                         libpdalcpp.m, libgdal.m, libglm.m: imported (IMPORT=, mk/ hooks)
+GUI/                         libglfw.m (imported), libimgui.m (Dear ImGui source); include/: ImGui headers
 Geo/
   include/                   public: point_cloud.h, raster.h, scene_frame.h
   libgeo.m/src/              point_cloud.cpp (PDAL), raster.cpp (GDAL raster I/O, CRS, warping)
@@ -220,4 +220,4 @@ Adding a new data type means writing one `Layer` subclass (in `Viewer/`); the `L
 
 ## License
 
-BSD 3-Clause License. See [LICENSE.md](LICENSE.md). Dear ImGui is MIT-licensed (`ImGui/LICENSE.txt`).
+BSD 3-Clause License. See [LICENSE.md](LICENSE.md). Dear ImGui is MIT-licensed (`GUI/libimgui.m/LICENSE.txt`).

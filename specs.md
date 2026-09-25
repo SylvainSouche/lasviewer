@@ -355,27 +355,29 @@ Workspace layout (bmake-it): frameworks at the repository root, each with a `mak
 
 | Framework | PREREQS | Module(s) |
 |---|---|---|
-| `PDAL`, `GDAL`, `GLFW`, `GLM` | — | one `IMPORT=` library module each |
-| `ImGui` | GLFW | `libimgui.m`: static, `WARN=none` |
-| `Geo` | PDAL GDAL GLM | `libgeo.m`: static, `OPENMP=yes`, `LIBS=pdalcpp gdal` |
-| `Viewer` | Geo ImGui GLFW GLM PDAL GDAL | `lasviewer.m`: `PROG=lasviewer`, `OPENMP=yes`, `LIBS=geo imgui glfw pdalcpp` |
+| `GIS` | — | imported: `libpdalcpp.m` (PDAL), `libgdal.m` (GDAL), `libglm.m` (glm, header-only) |
+| `GUI` | — | imported `libglfw.m` (GLFW); compiled `libimgui.m` (Dear ImGui, static, `WARN=none`, `LIBS=glfw`); ImGui headers in `GUI/include/` |
+| `Geo` | GIS | `libgeo.m`: static, `OPENMP=yes`, `LIBS=pdalcpp gdal` |
+| `Viewer` | Geo GIS GUI | `lasviewer.m`: `PROG=lasviewer`, `OPENMP=yes`, `LIBS=geo imgui glfw pdalcpp` |
+
+Third-party libraries are grouped by subject, one module per library. Header visibility is per framework, so this keeps `Geo` (no OpenGL, no GUI) from seeing GLFW or ImGui headers; the Viewer sees everything.
 
 Output: `build/<os>-<arch>/bin/lasviewer` at the workspace root (e.g. `build/macos-arm64/`).
 
 ### 12.2
-**External libraries are ordinary frameworks.** Each library module imports the installed library instead of compiling it (`IMPORT=`), staging only the headers listed in `IMPORT_HEADERS=` into the framework's public include path, so consumers use `PREREQS=` and `LIBS=` exactly as for the project's own libraries. External frameworks set `PUBLIC_HEADERS_SYSTEM=yes` (their headers reach consumers via `-isystem`).
+**External libraries are ordinary library modules.** Each one imports the installed library instead of compiling it (`IMPORT=`), staging only the headers listed in `IMPORT_HEADERS=` into the framework's public include path, so consumers use `PREREQS=` and `LIBS=` exactly as for the project's own libraries. External frameworks set `PUBLIC_HEADERS_SYSTEM=yes` (their headers reach consumers via `-isystem`).
 - PDAL: `IMPORT_HEADERS=pdal`. GLFW: `IMPORT_HEADERS=GLFW` via pkg-config `glfw3`.
-- GDAL installs its headers loose, so its module lists the 49 headers lasviewer's code reaches (the list and the command that regenerates it are in `GDAL/libgdal.m/makefile`).
-- glm is header-only with no pkg-config file: its include directory comes from per-target hooks (`GLM/libglm.m/mk/pre.<os>.mk`), and no library is staged.
+- GDAL installs its headers loose, so its module lists the 49 headers lasviewer's code reaches (the list and the command that regenerates it are in `GIS/libgdal.m/makefile`).
+- glm is header-only with no pkg-config file: its include directory comes from per-target hooks (`GIS/libglm.m/mk/pre.<os>.mk`), and no library is staged.
 
 ### 12.2b
-Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/lasviewer.m/mk/local.macos.mk` (`-framework OpenGL Cocoa IOKit`), `local.linux.mk` (`-lGL`), `GLM/libglm.m/mk/pre.<os>.mk`.
+Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/lasviewer.m/mk/local.macos.mk` (`-framework OpenGL Cocoa IOKit`), `local.linux.mk` (`-lGL`), `GIS/libglm.m/mk/pre.<os>.mk`.
 
 ### 12.2c
 **Workarounds for current bmake-it issues** (to remove when bmake-it is fixed):
 1. macOS: imported `.dylib`s are staged as dangling symlinks (only `lib<LIB>.dylib` is copied, not the versioned file it points to). Needs the bmake-it fix; there is no workaround in this repository.
 2. Imported link lists: bmake-it records pkg-config's `--static` list minus the library's own `-L` directory, so the transitive libraries can't be found. PDAL and GDAL are therefore resolved with `IMPORT_PREFIX=/opt/local` in `mk/pre.macos.mk` (their link line is then just `-lpdalcpp` / `-lgdal`, which is all a shared library needs).
-3. A static library's transitive `-l` flags are passed to consumers without their library directory, so `Viewer` lists `GDAL` in `PREREQS` although it includes no GDAL header.
+3. (Not needed with the current grouping, still a bmake-it bug:) a static library's transitive `-l` flags reach consumers without their library directory. `libgeo.a` passes `-lgdal` on; the Viewer finds it only because it lists `GIS` (for PDAL), whose library directory also holds GDAL.
 
 ### 12.3
 `bmake test` builds and runs the atf-c++ tests with Kyua: `Geo/libgeo.m/tests/raster_test.cpp` (linked against `libgeo.a`) and `Viewer/lasviewer.m/tests/{basic_test,scene_test}.cpp` (linked against the viewer's objects except `main.o`). JUnit results go to `build/<key>/runs/<run>/test-results.xml` in each module.

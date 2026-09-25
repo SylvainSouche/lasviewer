@@ -15,7 +15,8 @@ public:
 
     bool init(const LoadPlan& plan); // window + GL + UI + scene
     // Save the first frame rendered once all layers are idle to a binary PPM,
-    // then quit (for scripted checks).
+    // then quit (for scripted checks). The window then opens without focus
+    // and ignores keyboard/mouse input. Call before init().
     void setSnapshotPath(const std::string& path) { snapshotPath_ = path; }
     void run();
 

@@ -83,6 +83,12 @@ bool ViewerApp::createWindow(const std::string& title) {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
     glfwWindowHint(GLFW_SAMPLES, 4);
     glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_TRUE);
+    if (!snapshotPath_.empty()) {
+        // Scripted capture: don't take keyboard focus from whatever the user
+        // is doing (their keystrokes would otherwise change the view).
+        glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
+        glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+    }
     // 4.1 core enables DEM tessellation; 3.3 core still shows point clouds.
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
@@ -352,6 +358,7 @@ void ViewerApp::resetView() {
 // ---------------------------------------------------------------------------
 
 void ViewerApp::onKey(int key, int action, int mods) {
+    if (!snapshotPath_.empty()) return; // scripted capture: no user input
     if (key == GLFW_KEY_LEFT_SHIFT || key == GLFW_KEY_RIGHT_SHIFT) {
         controller_.setShift(action != GLFW_RELEASE);
         return;
@@ -380,6 +387,7 @@ void ViewerApp::onKey(int key, int action, int mods) {
 // Letter shortcuts go through the character callback so they follow the
 // active keyboard layout (AZERTY, QWERTZ, …) rather than US key positions.
 void ViewerApp::onChar(unsigned int c) {
+    if (!snapshotPath_.empty()) return;
     if (ImGui::GetIO().WantCaptureKeyboard) return;
     if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
     switch (c) {
@@ -414,6 +422,7 @@ void ViewerApp::onChar(unsigned int c) {
 }
 
 void ViewerApp::onMouseButton(int button, int action, int mods) {
+    if (!snapshotPath_.empty()) return;
     bool pressed = action == GLFW_PRESS;
     // Presses over UI belong to ImGui; releases always reach the controller
     // so a drag that ends over a window doesn't leave a button stuck.
@@ -432,6 +441,7 @@ void ViewerApp::onCursor(double x, double y) {
 }
 
 void ViewerApp::onScroll(double dy) {
+    if (!snapshotPath_.empty()) return;
     if (ImGui::GetIO().WantCaptureMouse) return;
     controller_.onScroll(dy);
 }

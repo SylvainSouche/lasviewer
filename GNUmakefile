@@ -20,7 +20,7 @@
 #   macOS (Homebrew):  brew install glfw pdal gdal glm pkg-config
 #   Linux (apt):       sudo apt install libglfw3-dev libpdal-dev libgdal-dev libglm-dev
 #
-# Dear ImGui is vendored in third_party/imgui (no install needed).
+# Dear ImGui is vendored in GUI/ (no install needed).
 
 # ===========================================================================
 # OS detection (lightweight — no errors here, deferred to build target)
@@ -100,7 +100,7 @@ TARGET    := lasviewer
 SRC       := Viewer/lasviewer.m/src/main.cpp
 SRC_DIR   := Viewer/lasviewer.m/src
 GEO_DIR   := Geo/libgeo.m/src
-IMGUI_DIR := ImGui/libimgui.m/src
+IMGUI_DIR := GUI/libimgui.m/src
 IMGUI_SOURCES := $(addprefix $(IMGUI_DIR)/,imgui.cpp imgui_draw.cpp imgui_tables.cpp \
                  imgui_widgets.cpp imgui_demo.cpp imgui_impl_glfw.cpp imgui_impl_opengl3.cpp)
 SOURCES   := $(wildcard $(SRC_DIR)/*.cpp) $(wildcard $(GEO_DIR)/*.cpp) $(IMGUI_SOURCES)
@@ -188,13 +188,13 @@ debug:
 $(OBJ_DIR)/$(IMGUI_DIR)/%.o: $(IMGUI_DIR)/%.cpp | $(OBJ_DIR) .build/config.mk
 	@echo "[cc] $<"
 	@mkdir -p $(dir $@)
-	@$(CXX) -std=c++17 $(if $(findstring -g,$(CXXFLAGS)),-g,-O2) -w -IImGui/include -isystem $(PORTS)/include \
+	@$(CXX) -std=c++17 $(if $(findstring -g,$(CXXFLAGS)),-g,-O2) -w -IGUI/include -isystem $(PORTS)/include \
 	        $(if $(filter macos,$(OS)),-DGL_SILENCE_DEPRECATION,) -c $< -o $@
 
 $(OBJ_DIR)/%.o: %.cpp | $(OBJ_DIR) .build/config.mk
 	@echo "[cc] $<"
 	@mkdir -p $(dir $@)
-	@CXXFLAGS_OBJ="$(CXXFLAGS) -IGeo/include -IViewer/local/include -isystem ImGui/include -isystem $(PORTS) -isystem $(PORTS)/include"; \
+	@CXXFLAGS_OBJ="$(CXXFLAGS) -IGeo/include -IViewer/local/include -isystem GUI/include -isystem $(PORTS) -isystem $(PORTS)/include"; \
 	if [ "$(OS)" = "macos" ]; then \
 	        CXXFLAGS_OBJ="$$CXXFLAGS_OBJ -DGL_SILENCE_DEPRECATION"; \
 	fi; \
