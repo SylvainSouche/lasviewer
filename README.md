@@ -41,7 +41,7 @@ brew install glfw pdal gdal glm pkg-config bmake
 sudo apt install libglfw3-dev libpdal-dev libgdal-dev libglm-dev pkg-config bmake
 ```
 
-GDAL is also a PDAL dependency, so it's normally installed already. Dear ImGui is vendored in `GUI/` (v1.91.9b, MIT), so there's nothing to install for it. ATF and Kyua are needed only for `bmake test`.
+GDAL is also a PDAL dependency, so it's normally installed already. Dear ImGui (v1.91.9b, MIT) is downloaded from its release tag by the first build and checked against `GUI/libimgui.m/distinfo` (needs network access once); nothing of it is committed. ATF and Kyua are needed only for `bmake test`.
 
 The build uses [bmake-it](https://github.com/SylvainSouche/bmake-it), a BSD-make build system. Get it once and let bmake find its `mk/` files:
 
@@ -51,7 +51,7 @@ sh bmake-it/scripts/install-env.sh      # adds MAKESYSPATH to your shell rc; or:
 export MAKESYSPATH=/path/to/bmake-it/mk:/opt/local/share/mk
 ```
 
-> **Current bmake-it needs one fix on macOS.** Imported libraries are staged as dangling symlinks, because only `lib<LIB>.dylib` is copied and not the versioned file it points to (`lib<LIB>.<N>.dylib`). Until that fix is in bmake-it, the link fails with "has not been built yet".
+Use a bmake-it that includes `IMPORT=fetch:` (merged into its `main`, PR #2).
 
 ### Build
 
@@ -127,7 +127,7 @@ pdal translate cloud.copc.laz dsm.tif --readers.copc.resolution=0.5 \
 
 ## Build System
 
-The build is [bmake-it](https://github.com/SylvainSouche/bmake-it): a workspace (this directory) of frameworks, each holding modules (`*.m`). Third-party libraries are grouped by subject in two frameworks, `GIS` and `GUI`, one module per library. An external library's module imports the installed library (`IMPORT=`) instead of compiling it, so it's used exactly like the project's own libraries.
+The build is [bmake-it](https://github.com/SylvainSouche/bmake-it): a workspace (this directory) of frameworks, each holding modules (`*.m`). Third-party libraries are grouped by subject in two frameworks, `GIS` and `GUI`, one module per library. An external library's module either imports the installed library (`IMPORT=pkg:`/`prefix:`) or downloads and compiles its release (`IMPORT=fetch:`, Dear ImGui), so it's used exactly like the project's own libraries. Downloads go to `<module>/distfiles/` and `<module>/work/`, never committed.
 
 ```bash
 bmake                 # build everything for the host (build/<os>-<arch>/)
@@ -140,7 +140,7 @@ cd Geo && bmake       # build / test one framework (or one module: cd Geo/libgeo
 | Framework | Contents | Notes |
 |---|---|---|
 | `GIS` | PDAL, GDAL, glm, imported | headers staged from the install; glm is header-only |
-| `GUI` | GLFW imported; Dear ImGui compiled (`libimgui.a`) | ImGui is vendored source, warnings off |
+| `GUI` | GLFW imported; Dear ImGui fetched and compiled (`libimgui.a`) | ImGui comes from its release archive (`IMPORT=fetch:`), warnings off |
 | `Geo` | `libgeo.a`: point-cloud (PDAL) and raster (GDAL) I/O | no OpenGL; `raster_test` |
 | `Viewer` | the `lasviewer` program | `basic_test`, `scene_test` |
 
@@ -159,7 +159,7 @@ Per-target settings live in `mk/` hook files next to the module, for example `Vi
 ```
 makefile                     bmake-it workspace
 GIS/                         libpdalcpp.m, libgdal.m, libglm.m: imported (IMPORT=, mk/ hooks)
-GUI/                         libglfw.m (imported), libimgui.m (Dear ImGui source); include/: ImGui headers
+GUI/                         libglfw.m (imported), libimgui.m (Dear ImGui, fetched: makefile + distinfo)
 Geo/
   include/                   public: point_cloud.h, raster.h, scene_frame.h
   libgeo.m/src/              point_cloud.cpp (PDAL), raster.cpp (GDAL raster I/O, CRS, warping)
@@ -220,4 +220,4 @@ Adding a new data type means writing one `Layer` subclass (in `Viewer/`); the `L
 
 ## License
 
-BSD 3-Clause License. See [LICENSE.md](LICENSE.md). Dear ImGui is MIT-licensed (`GUI/libimgui.m/LICENSE.txt`).
+BSD 3-Clause License. See [LICENSE.md](LICENSE.md). Dear ImGui is MIT-licensed (its `LICENSE.txt` is in the fetched archive).

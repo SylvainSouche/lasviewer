@@ -12,3 +12,6 @@ test-report/
 .gen-mod-order.mk
 .gen-fw-order.mk
 .depend
+# bmake-it fetch: downloaded archives and extracted work trees
+distfiles/
+work/

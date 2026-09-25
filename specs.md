@@ -25,7 +25,7 @@ Raster reader: **GDAL** (orthophotos, DEMs, georeferencing, CRS, reprojection), 
 Math library: **glm** (header-only).
 
 ### 1.6b
-UI and on-screen text: **Dear ImGui** (v1.91.9b, MIT), vendored in `third_party/imgui` (core + GLFW and OpenGL3 backends). It replaced the FreeType glyph-atlas text renderer, so FreeType is no longer a dependency.
+UI and on-screen text: **Dear ImGui** (v1.91.9b, MIT; core + GLFW and OpenGL3 backends), fetched from its release tag and compiled by the build (§12.2). It replaced the FreeType glyph-atlas text renderer, so FreeType is no longer a dependency.
 
 ### 1.7
 Build system: **bmake-it** (BSD make; https://github.com/SylvainSouche/bmake-it). The repository is a bmake-it workspace; see §12. A plain GNU `GNUmakefile` building the same binary from the same tree is kept temporarily for comparison.
@@ -356,7 +356,7 @@ Workspace layout (bmake-it): frameworks at the repository root, each with a `mak
 | Framework | PREREQS | Module(s) |
 |---|---|---|
 | `GIS` | — | imported: `libpdalcpp.m` (PDAL), `libgdal.m` (GDAL), `libglm.m` (glm, header-only) |
-| `GUI` | — | imported `libglfw.m` (GLFW); compiled `libimgui.m` (Dear ImGui, static, `WARN=none`, `LIBS=glfw`); ImGui headers in `GUI/include/` |
+| `GUI` | — | imported `libglfw.m` (GLFW); fetched `libimgui.m` (Dear ImGui: `IMPORT=fetch:`, static, `WARN=none`, `LIBS=glfw`) |
 | `Geo` | GIS | `libgeo.m`: static, `OPENMP=yes`, `LIBS=pdalcpp gdal` |
 | `Viewer` | Geo GIS GUI | `lasviewer.m`: `PROG=lasviewer`, `OPENMP=yes`, `LIBS=geo imgui glfw pdalcpp` |
 
@@ -367,6 +367,7 @@ Output: `build/<os>-<arch>/bin/lasviewer` at the workspace root (e.g. `build/mac
 ### 12.2
 **External libraries are ordinary library modules.** Each one imports the installed library instead of compiling it (`IMPORT=`), staging only the headers listed in `IMPORT_HEADERS=` into the framework's public include path, so consumers use `PREREQS=` and `LIBS=` exactly as for the project's own libraries. External frameworks set `PUBLIC_HEADERS_SYSTEM=yes` (their headers reach consumers via `-isystem`).
 - PDAL: `IMPORT_HEADERS=pdal`. GLFW: `IMPORT_HEADERS=GLFW` via pkg-config `glfw3`.
+- Dear ImGui: `IMPORT=fetch:imgui`. The release archive (`FETCH_URL=`, GitHub tag `v1.91.9b`) is downloaded once into `distfiles/`, checked against the committed `distinfo` (SHA-256 and size), extracted into `work/`, and its `SRCS=` (core + the GLFW/OpenGL3 backends) compiled by bmake-it; `IMPORT_HEADERS=` are staged like an imported library's. Only the makefile, `distinfo` and `mk/` hook are committed.
 - GDAL installs its headers loose, so its module lists the 49 headers lasviewer's code reaches (the list and the command that regenerates it are in `GIS/libgdal.m/makefile`).
 - glm is header-only with no pkg-config file: its include directory comes from per-target hooks (`GIS/libglm.m/mk/pre.<os>.mk`), and no library is staged.
 
@@ -375,9 +376,10 @@ Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/la
 
 ### 12.2c
 **Workarounds for current bmake-it issues** (to remove when bmake-it is fixed):
-1. macOS: imported `.dylib`s are staged as dangling symlinks (only `lib<LIB>.dylib` is copied, not the versioned file it points to). Needs the bmake-it fix; there is no workaround in this repository.
-2. Imported link lists: bmake-it records pkg-config's `--static` list minus the library's own `-L` directory, so the transitive libraries can't be found. PDAL and GDAL are therefore resolved with `IMPORT_PREFIX=/opt/local` in `mk/pre.macos.mk` (their link line is then just `-lpdalcpp` / `-lgdal`, which is all a shared library needs).
-3. (Not needed with the current grouping, still a bmake-it bug:) a static library's transitive `-l` flags reach consumers without their library directory. `libgeo.a` passes `-lgdal` on; the Viewer finds it only because it lists `GIS` (for PDAL), whose library directory also holds GDAL.
+1. Imported link lists: bmake-it records pkg-config's `--static` list minus the library's own `-L` directory, so the transitive libraries can't be found. PDAL and GDAL are therefore resolved with `IMPORT_PREFIX=/opt/local` in `mk/pre.macos.mk` (their link line is then just `-lpdalcpp` / `-lgdal`, which is all a shared library needs).
+2. (Not needed with the current grouping, still a bmake-it bug:) a static library's transitive `-l` flags reach consumers without their library directory. `libgeo.a` passes `-lgdal` on; the Viewer finds it only because it lists `GIS` (for PDAL), whose library directory also holds GDAL.
+3. `IMPORT=fetch:` doesn't create `obj/` subdirectories for `SRCS` in subdirectories of the fetched tree, and doesn't put the tree's root on the include path when compiling it. `GUI/libimgui.m/mk/local.mk` does both.
+4. Not worked around: every build recompiles a `fetch:` module (the fetch step is a `.PHONY` prerequisite of its compile rules), about 10 s for ImGui.
 
 ### 12.3
 `bmake test` builds and runs the atf-c++ tests with Kyua: `Geo/libgeo.m/tests/raster_test.cpp` (linked against `libgeo.a`) and `Viewer/lasviewer.m/tests/{basic_test,scene_test}.cpp` (linked against the viewer's objects except `main.o`). JUnit results go to `build/<key>/runs/<run>/test-results.xml` in each module.
