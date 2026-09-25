@@ -19,7 +19,7 @@ Windowing toolkit: **GLFW** (minimal, lightweight, no native widgets required).
 LAS/LAZ reader: **PDAL** (`readers.copc`, `readers.las`, etc.).
 
 ### 1.5
-Raster reader: **GDAL** (orthophotos, DEMs, georeferencing, CRS, reprojection), in `src/raster.*`. GDAL is already a PDAL dependency. It replaced hand-written GeoTIFF tag parsing on libtiff plus a direct PROJ dependency; neither libtiff nor PROJ is linked directly any more.
+Raster reader: **GDAL** (orthophotos, DEMs, georeferencing, CRS, reprojection), in `Geo/libgeo.m/src/raster.cpp`. GDAL is already a PDAL dependency. It replaced hand-written GeoTIFF tag parsing on libtiff plus a direct PROJ dependency; neither libtiff nor PROJ is linked directly any more.
 
 ### 1.6
 Math library: **glm** (header-only).
@@ -28,7 +28,7 @@ Math library: **glm** (header-only).
 UI and on-screen text: **Dear ImGui** (v1.91.9b, MIT), vendored in `third_party/imgui` (core + GLFW and OpenGL3 backends). It replaced the FreeType glyph-atlas text renderer, so FreeType is no longer a dependency.
 
 ### 1.7
-Build system: **plain Makefile** with multi-OS detection (MacPorts, Homebrew, Linux system packages).
+Build system: **bmake-it** (BSD make; https://github.com/SylvainSouche/bmake-it). The repository is a bmake-it workspace; see §12. A plain GNU `GNUmakefile` building the same binary from the same tree is kept temporarily for comparison.
 
 ### 1.8
 Package manager: **MacPorts** (`/opt/local`) on macOS. Homebrew and Linux system packages also supported.
@@ -37,7 +37,7 @@ Package manager: **MacPorts** (`/opt/local`) on macOS. Homebrew and Linux system
 macOS OpenGL: must include `<OpenGL/gl3.h>` and define `GL_SILENCE_DEPRECATION` before `<GLFW/glfw3.h>` to get core-profile function declarations.
 
 ### 1.10
-OpenMP: enabled by default (`-fopenmp`) for parallel point cloud loading and colorization. Can be disabled with `make OPENMP=0`.
+OpenMP: `OPENMP=yes` on the `libgeo.m` and `lasviewer.m` modules (point-cloud thinning and colorization, DEM quadtree build). bmake-it probes that the compiler accepts `-fopenmp` and fails with a clear error otherwise.
 
 ---
 
@@ -79,7 +79,7 @@ Command-line interface:
 One **scene CRS**: the first input that declares one, point clouds first, then DEMs, then the orthophoto. CRSs are compared on their **horizontal** part only (a compound `EPSG:2154+5720` equals `EPSG:2154`). Orthophotos and DEMs in another horizontal CRS are **warped into the scene CRS on load** (GDAL, bilinear; DEM gaps become nodata, orthophoto gaps get alpha 0), so every layer and the ortho texture share one coordinate system. Point clouds are not reprojected: one in another CRS is reported and will be misplaced. EPSG codes are shown in the UI.
 
 ### 3.2
-World-to-GL transform, **shared by every layer of a scene** (`SceneFrame`, `src/scene_frame.h`):
+World-to-GL transform, **shared by every layer of a scene** (`SceneFrame`, `Geo/include/scene_frame.h`):
 ```
 GL_X = (worldX - center.x) / scale       ← easting
 GL_Y = (worldZ - center.z) / scale       ← elevation (up)
@@ -161,7 +161,7 @@ This replaced an earlier, simpler `tileWorldMeters / (tilePixelSize / 3.0)` radi
 No LRU eviction: every tile stays resident at its last loaded resolution. (The previous 10-second eviction never fired, because every tile was drawn and marked "used" each frame.) A memory budget is planned together with octree-based streaming.
 
 ### 5.6
-**Culling.** Each frame, a tile is skipped if its box (Y scaled by the Z exaggeration) is entirely outside one frustum plane, or if the **scene-wide Hi-Z pyramid** (`HiZ`, `src/hiz.*`) says it is occluded. After all layers have drawn, the viewer max-reduces the frame's depth buffer into an R32F mip pyramid and reads back one small level (~64×64) once per frame. The next frame tests tile boxes against it. Any layer's depth (including DEM meshes) can therefore occlude tiles. The pyramid is one frame stale by design: the only failure mode is a newly revealed tile missing for one frame. It is invalidated on frames where it isn't rebuilt. It can be toggled from the UI ("Occlusion culling").
+**Culling.** Each frame, a tile is skipped if its box (Y scaled by the Z exaggeration) is entirely outside one frustum plane, or if the **scene-wide Hi-Z pyramid** (`HiZ`, `Viewer/lasviewer.m/src/hiz.cpp`) says it is occluded. After all layers have drawn, the viewer max-reduces the frame's depth buffer into an R32F mip pyramid and reads back one small level (~64×64) once per frame. The next frame tests tile boxes against it. Any layer's depth (including DEM meshes) can therefore occlude tiles. The pyramid is one frame stale by design: the only failure mode is a newly revealed tile missing for one frame. It is invalidated on frames where it isn't rebuilt. It can be toggled from the UI ("Occlusion culling").
 
 ### 5.7
 Max **16** outstanding tile loads per layer (`maxConcurrentLoads`). A failed load is retried at twice the resolution value (coarser), up to 4 attempts; a tile keeps its previous geometry while a refinement is in flight.
@@ -329,7 +329,7 @@ screen plane).
 ## 11. On-Screen Help & Console Log
 
 ### 11.1
-**Side panel** (ImGui, `src/viewer_ui.cpp`):
+**Side panel** (ImGui, `Viewer/lasviewer.m/src/viewer_ui.cpp`):
 - *Layers*: a visibility checkbox per layer, a status line (points drawn, tiles loading, patches, rebuilding), and the layer's own settings (colors; for DEMs: max level, collapsing angle, pixels/segment, wireframe, displacement, patch edges). The file path and EPSG code are in a tooltip. Orthophoto name, size and EPSG code are listed below the layers.
 - *View*: reset/top/side, projection, Z exaggeration, point size, point density, occlusion culling, tile boxes.
 - *Info*: fps, camera target and distance in world units, last picked point.
@@ -351,29 +351,34 @@ While loading, a centred "Loading …" message is drawn between steps.
 ## 12. Build System
 
 ### 12.1
-Single `Makefile` with multi-OS detection (macOS MacPorts, macOS Homebrew, Linux system packages). Auto-detects via `$(wildcard)`.
+Workspace layout (bmake-it): frameworks at the repository root, each with a `makefile` declaring `PREREQS=`; modules are `NAME.m` directories with `src/`, optional `tests/` and `mk/`.
+
+| Framework | PREREQS | Module(s) |
+|---|---|---|
+| `PDAL`, `GDAL`, `GLFW`, `GLM` | — | one `IMPORT=` library module each |
+| `ImGui` | GLFW | `libimgui.m`: static, `WARN=none` |
+| `Geo` | PDAL GDAL GLM | `libgeo.m`: static, `OPENMP=yes`, `LIBS=pdalcpp gdal` |
+| `Viewer` | Geo ImGui GLFW GLM PDAL GDAL | `lasviewer.m`: `PROG=lasviewer`, `OPENMP=yes`, `LIBS=geo imgui glfw pdalcpp` |
+
+Output: `build/<os>-<arch>/bin/lasviewer` at the workspace root (e.g. `build/macos-arm64/`).
 
 ### 12.2
-Targets:
-- `make` / `make build` — compile main.cpp + src/*.cpp + third_party/imgui → lasviewer
-- `make debug` — same, but `-g` instead of `-O2` → lasviewer-debug, in a separate `.build/obj-debug` object dir (so `make build`/`make debug` can't serve stale cross-mode object files to each other)
-- `make test` — compile + run unit tests (self-contained, no external deps)
-- `make lint` — static analysis (clang-tidy or cppcheck fallback)
-- `make fmt` — format source with clang-format
-- `make dist` — create source tarball
-- `make doc` — generate Doxygen HTML documentation
-- `make clean` — remove all build artifacts
-- `make run ARGS="..."` — build + run with arguments
-- `make help` — show all targets
+**External libraries are ordinary frameworks.** Each library module imports the installed library instead of compiling it (`IMPORT=`), staging only the headers listed in `IMPORT_HEADERS=` into the framework's public include path, so consumers use `PREREQS=` and `LIBS=` exactly as for the project's own libraries. External frameworks set `PUBLIC_HEADERS_SYSTEM=yes` (their headers reach consumers via `-isystem`).
+- PDAL: `IMPORT_HEADERS=pdal`. GLFW: `IMPORT_HEADERS=GLFW` via pkg-config `glfw3`.
+- GDAL installs its headers loose, so its module lists the 49 headers lasviewer's code reaches (the list and the command that regenerates it are in `GDAL/libgdal.m/makefile`).
+- glm is header-only with no pkg-config file: its include directory comes from per-target hooks (`GLM/libglm.m/mk/pre.<os>.mk`), and no library is staged.
 
 ### 12.2b
-`make build` needs GLFW, PDAL, GDAL and glm (GDAL flags from `pkg-config gdal`; not repeated at link time when PDAL's own link line already contains it). Dear ImGui is compiled from `third_party/imgui` (warnings suppressed for third-party code). Header dependencies are tracked with `-MMD -MP`.
+Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/lasviewer.m/mk/local.macos.mk` (`-framework OpenGL Cocoa IOKit`), `local.linux.mk` (`-lGL`), `GLM/libglm.m/mk/pre.<os>.mk`.
 
 ### 12.2c
-No optional dependencies remain: PROJ is used only through GDAL.
+**Workarounds for current bmake-it issues** (to remove when bmake-it is fixed):
+1. macOS: imported `.dylib`s are staged as dangling symlinks (only `lib<LIB>.dylib` is copied, not the versioned file it points to). Needs the bmake-it fix; there is no workaround in this repository.
+2. Imported link lists: bmake-it records pkg-config's `--static` list minus the library's own `-L` directory, so the transitive libraries can't be found. PDAL and GDAL are therefore resolved with `IMPORT_PREFIX=/opt/local` in `mk/pre.macos.mk` (their link line is then just `-lpdalcpp` / `-lgdal`, which is all a shared library needs).
+3. A static library's transitive `-l` flags are passed to consumers without their library directory, so `Viewer` lists `GDAL` in `PREREQS` although it includes no GDAL header.
 
 ### 12.3
-`make test` builds three runners. `test_basic` is self-contained formula checks with no dependencies. `test_scene` links the real `camera.cpp` and `camera_controller.cpp` (glm and GLFW headers, no GL context). `test_raster` links the real `raster.cpp` against GDAL and writes its own small GeoTIFFs in a temporary directory.
+`bmake test` builds and runs the atf-c++ tests with Kyua: `Geo/libgeo.m/tests/raster_test.cpp` (linked against `libgeo.a`) and `Viewer/lasviewer.m/tests/{basic_test,scene_test}.cpp` (linked against the viewer's objects except `main.o`). JUnit results go to `build/<key>/runs/<run>/test-results.xml` in each module.
 
 ### 12.4
 `.clang-tidy` config: bugprone-*, cert-*, misc-*, modernize-*, performance-*, readability-* checks. Magic numbers and identifier length suppressed.
@@ -389,7 +394,7 @@ No optional dependencies remain: PROJ is used only through GDAL.
 ## 13. Testing
 
 ### 13.1
-`tests/test_basic.cpp` verifies core formulas by re-deriving them locally. `tests/test_scene.cpp` tests the real frame and camera code. `tests/test_raster.cpp` tests the real GDAL raster I/O: pixel-center georeferencing, downsampling and affine rescale, `.tfw` world files, declared and undeclared nodata, Terrain RGB decoding, horizontal CRS comparison and extent transformation, warping a DEM from EPSG:4326 into EPSG:2154 (value checked at a transformed point), and a rotated grid made north-up.
+Three atf-c++ test programs, run by `bmake test` (§12.3): `basic_test` re-derives formulas locally; `scene_test` tests the real frame and camera code; `raster_test` tests the real GDAL raster I/O on GeoTIFFs it writes itself: pixel-center georeferencing, downsampling and affine rescale, `.tfw` world files, declared and undeclared nodata, Terrain RGB decoding, horizontal CRS comparison and extent transformation, warping a DEM from EPSG:4326 into EPSG:2154 (value checked at a transformed point), and a rotated grid made north-up.
 
 ### 13.2
 Test coverage:
@@ -400,10 +405,10 @@ Test coverage:
 6. Morton (Z-order) code interleaving
 7. Near/far plane computation from bbox corners
 8. Elevation gradient color ramp
-9. Tile LOD resolution computation — mirrors the current PCA/OBB projected-area algorithm in `src/copc_streamer.cpp` (§5.4), not the earlier radius-based formula. Keeping this test in sync with `desiredResolution()` whenever that function changes is a manual step since the test replicates the formula rather than linking against it.
+9. Tile LOD resolution computation — mirrors the current PCA/OBB projected-area algorithm in `Viewer/lasviewer.m/src/copc_streamer.cpp` (§5.4), not the earlier radius-based formula. Keeping this test in sync with `desiredResolution()` whenever that function changes is a manual step since the test replicates the formula rather than linking against it.
 
 ### 13.3
-Tests use assert-based macros with RUN/PASS output. Exit code 0 on all pass, 1 on any failure.
+Tests use atf-c++ (`ATF_TEST_CASE`, `ATF_REQUIRE`); Kyua runs each test case in its own scratch directory and reports pass/fail per case.
 
 ---
 
@@ -460,17 +465,17 @@ Raster read failures (`RasterIO` errors) are reported per input; the input is sk
 
 ## 17. File Structure
 
-See README.md → Architecture for the per-file map (main.cpp, src/, third_party/imgui, tests/, docs/).
+bmake-it workspace layout (§12.1); see README.md → Architecture for the per-file map.
 
 ---
 
 ## 18. Scene and Layers
 
 ### 18.1
-A **Scene** (`src/scene.h`) holds the shared `SceneFrame` (§3.2), at most one orthophoto (shared by every layer, outliving them) and an ordered list of **layers**. Loading (`Scene::load`): read all header extents → fix the frame → warn on CRS disagreement → load the orthophoto → create one layer per input. An input that fails is reported and skipped.
+A **Scene** (`Viewer/local/include/scene.h`) holds the shared `SceneFrame` (§3.2), at most one orthophoto (shared by every layer, outliving them) and an ordered list of **layers**. Loading (`Scene::load`): read all header extents → fix the frame → warn on CRS disagreement → load the orthophoto → create one layer per input. An input that fails is reported and skipped.
 
 ### 18.2
-The **Layer** interface (`src/layer.h`): `bounds()` (GL space), `update(ctx)` (every frame, visible or not, to drain background work), `render(ctx)`, `renderOverlay(ctx)`, `wantsHiZ()`, `drawUI()` (ImGui settings), `status()`, `busy()`, and `handleAction(LayerAction)` for keyboard actions that apply to every layer (colors, DEM detail, …). Implementations: `PointCloudLayer`, `CopcLayer`, `DemLayer`.
+The **Layer** interface (`Viewer/local/include/layer.h`): `bounds()` (GL space), `update(ctx)` (every frame, visible or not, to drain background work), `render(ctx)`, `renderOverlay(ctx)`, `wantsHiZ()`, `drawUI()` (ImGui settings), `status()`, `busy()`, and `handleAction(LayerAction)` for keyboard actions that apply to every layer (colors, DEM detail, …). Implementations: `PointCloudLayer`, `CopcLayer`, `DemLayer`.
 
 ### 18.3
 `RenderContext` carries the view/projection matrices, camera position, FOV, viewport, projection mode, global `ViewSettings` (Z exaggeration, point size, point density, occlusion, tile boxes), the shared `Programs`, and the previous frame's Hi-Z pyramid.
@@ -479,4 +484,4 @@ The **Layer** interface (`src/layer.h`): `bounds()` (GL space), `update(ctx)` (e
 Frame order (`ViewerApp::renderFrame`): near/far from the visible bounds → `update` all layers → clear → `render` visible layers → build Hi-Z if a visible layer wants it (otherwise invalidate it) → overlays → resolve a pending double-click pick from the depth buffer → ImGui.
 
 ### 18.5
-Navigation is in `CameraController` (`src/camera_controller.*`), separate from GLFW callbacks and unit-tested: orbit, head turn, pan (scaled by window height, the cursor's coordinate space), fly, arrows, home, top/side, `focusOn()` (§7.3b), double-click detection.
+Navigation is in `CameraController` (`Viewer/lasviewer.m/src/camera_controller.cpp`), separate from GLFW callbacks and unit-tested: orbit, head turn, pan (scaled by window height, the cursor's coordinate space), fly, arrows, home, top/side, `focusOn()` (§7.3b), double-click detection.

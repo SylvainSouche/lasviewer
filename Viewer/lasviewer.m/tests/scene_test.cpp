@@ -1,38 +1,22 @@
-// test_scene.cpp — unit tests linked against the real scene/camera code
-// (unlike test_basic.cpp, which re-derives formulas locally). Needs glm and
-// the GLFW header (for key constants), no GL context.
-#include "../src/camera.h"
-#include "../src/camera_controller.h"
-#include "../src/gl_platform.h" // GLFW mouse button constants
-#include "../src/scene_frame.h"
+// scene_test.cpp — tests of the real scene-frame and camera code (atf-c++).
+// Needs glm and the GLFW header (key constants), no GL context.
+#include "camera.h"
+#include "camera_controller.h"
+#include "gl_platform.h" // GLFW mouse button constants
+#include "scene_frame.h"
 
 #include <cmath>
 #include <cstdio>
 
-static int g_failed = 0, g_run = 0;
+#include <atf-c++.hpp>
 
-#define CHECK(cond)                                                              \
-    do {                                                                         \
-        if (!(cond)) {                                                           \
-            std::printf("    FAILED: %s (%s:%d)\n", #cond, __FILE__, __LINE__); \
-            ++g_failed;                                                          \
-            return;                                                              \
-        }                                                                        \
-    } while (0)
-
-#define RUN(fn)                                   \
-    do {                                          \
-        ++g_run;                                  \
-        int before = g_failed;                    \
-        std::printf("  [RUN ] %s\n", #fn);        \
-        fn();                                     \
-        if (g_failed == before) std::printf("  [PASS] %s\n", #fn); \
-    } while (0)
+#define CHECK(cond) ATF_REQUIRE(cond)
 
 static bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
 
 // World → GL → world round trip, in Lambert-93-sized coordinates.
-static void test_frame_roundtrip() {
+ATF_TEST_CASE_WITHOUT_HEAD(test_frame_roundtrip);
+ATF_TEST_CASE_BODY(test_frame_roundtrip) {
     WorldBounds b;
     b.extendXY(991000.0, 6557000.0, 992000.0, 6559000.0);
     b.extendZ(746.0, 1677.0);
@@ -56,7 +40,8 @@ static void test_frame_roundtrip() {
 }
 
 // Two adjacent tiles transformed by one frame share their common edge.
-static void test_frame_shared_between_tiles() {
+ATF_TEST_CASE_WITHOUT_HEAD(test_frame_shared_between_tiles);
+ATF_TEST_CASE_BODY(test_frame_shared_between_tiles) {
     WorldBounds a, b, all;
     a.extendXY(991000.0, 6557000.0, 992000.0, 6558000.0);
     b.extendXY(991000.0, 6558000.0, 992000.0, 6559000.0);
@@ -69,7 +54,8 @@ static void test_frame_shared_between_tiles() {
 }
 
 // Without Z data the frame is centered at z = 0 and still valid.
-static void test_frame_without_z() {
+ATF_TEST_CASE_WITHOUT_HEAD(test_frame_without_z);
+ATF_TEST_CASE_BODY(test_frame_without_z) {
     WorldBounds b;
     b.extendXY(0.0, 0.0, 300.0, 400.0);
     SceneFrame f = SceneFrame::fromBounds(b);
@@ -79,7 +65,8 @@ static void test_frame_without_z() {
 }
 
 // focusOn() makes the point the pivot without moving the eye.
-static void test_focus_keeps_eye_fixed() {
+ATF_TEST_CASE_WITHOUT_HEAD(test_focus_keeps_eye_fixed);
+ATF_TEST_CASE_BODY(test_focus_keeps_eye_fixed) {
     Camera cam;
     cam.target = glm::vec3(0.1f, -0.05f, 0.2f);
     cam.distance = 1.7f;
@@ -96,7 +83,8 @@ static void test_focus_keeps_eye_fixed() {
 }
 
 // home() centers on the bounds (with Z exaggeration applied).
-static void test_home_frames_bounds() {
+ATF_TEST_CASE_WITHOUT_HEAD(test_home_frames_bounds);
+ATF_TEST_CASE_BODY(test_home_frames_bounds) {
     Camera cam;
     CameraController ctl(cam);
     GLBounds b;
@@ -112,7 +100,8 @@ static void test_home_frames_bounds() {
 
 // A double click is two presses within the time and distance limits; a
 // third press right after does not count as another double click.
-static void test_double_click_detection() {
+ATF_TEST_CASE_WITHOUT_HEAD(test_double_click_detection);
+ATF_TEST_CASE_BODY(test_double_click_detection) {
     Camera cam;
     CameraController ctl(cam);
     double x = 0, y = 0;
@@ -130,14 +119,11 @@ static void test_double_click_detection() {
     CHECK(!ctl.takePickRequest(x, y));
 }
 
-int main() {
-    std::printf("=== lasviewer scene tests ===\n");
-    RUN(test_frame_roundtrip);
-    RUN(test_frame_shared_between_tiles);
-    RUN(test_frame_without_z);
-    RUN(test_focus_keeps_eye_fixed);
-    RUN(test_home_frames_bounds);
-    RUN(test_double_click_detection);
-    std::printf("\nRan %d tests, %d passed, %d failed.\n", g_run, g_run - g_failed, g_failed);
-    return g_failed == 0 ? 0 : 1;
+ATF_INIT_TEST_CASES(tcs) {
+    ATF_ADD_TEST_CASE(tcs, test_frame_roundtrip);
+    ATF_ADD_TEST_CASE(tcs, test_frame_shared_between_tiles);
+    ATF_ADD_TEST_CASE(tcs, test_frame_without_z);
+    ATF_ADD_TEST_CASE(tcs, test_focus_keeps_eye_fixed);
+    ATF_ADD_TEST_CASE(tcs, test_home_frames_bounds);
+    ATF_ADD_TEST_CASE(tcs, test_double_click_detection);
 }

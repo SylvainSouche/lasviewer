@@ -1,9 +1,6 @@
-// tests/test_basic.cpp — Unit tests for lasviewer math
-// Run with: make test
-// These tests verify the core math formulas used in main.cpp WITHOUT linking
-// against it (the formulas are replicated here so the tests are independent).
+// basic_test.cpp — formula tests (atf-c++). These re-derive formulas used by
+// the viewer locally rather than linking the code that uses them.
 
-#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -13,22 +10,11 @@
 #include <utility>
 #include <algorithm>
 
-static int tests_run = 0;
-static int tests_passed = 0;
+#include <atf-c++.hpp>
 
-#define TEST(name) \
-    static void name(); \
-    struct name##_runner { \
-        name##_runner() { \
-            tests_run++; \
-            printf("  [RUN ] %s\n", #name); \
-            name(); \
-            tests_passed++; \
-            printf("  [PASS] %s\n", #name); \
-        } \
-    }; \
-    static name##_runner name##_inst; \
-    static void name()
+#define TEST(name)                    \
+    ATF_TEST_CASE_WITHOUT_HEAD(name);  \
+    ATF_TEST_CASE_BODY(name)
 
 // ---------------------------------------------------------------------------
 // Coordinate transform: world (X, Y, Z) → GL (X, Y, Z)
@@ -49,9 +35,9 @@ TEST(test_coord_transform) {
 
     // UL corner: negative X (west of center), negative Y (low elevation),
     // negative Z (north of center → negated).
-    assert(gx < 0.0f);
-    assert(gy < 0.0f);
-    assert(gz < 0.0f);
+    ATF_REQUIRE(gx < 0.0f);
+    ATF_REQUIRE(gy < 0.0f);
+    ATF_REQUIRE(gz < 0.0f);
 
     // Cloud LR corner: world (1011000, 6548000, 3868) — high X, low Y, high Z
     wx = 1011000; wy = 6548000; wz = 3868;
@@ -59,9 +45,9 @@ TEST(test_coord_transform) {
     gy = static_cast<float>((wz - centerZ) * invScale);
     gz = static_cast<float>(-(wy - centerY) * invScale);
 
-    assert(gx > 0.0f);
-    assert(gy > 0.0f);
-    assert(gz > 0.0f);
+    ATF_REQUIRE(gx > 0.0f);
+    ATF_REQUIRE(gy > 0.0f);
+    ATF_REQUIRE(gz > 0.0f);
 }
 
 // ---------------------------------------------------------------------------
@@ -84,10 +70,10 @@ TEST(test_affine_inverse) {
 
     // col = 5 * (1010500 - 1009000.1) = 5 * 1499.9 ≈ 7500
     // row = -5 * (6548500 - 6550999.9) = -5 * (-2499.9) ≈ 12500
-    assert(std::abs(col - 7500.0) < 10.0);
-    assert(std::abs(row - 12500.0) < 10.0);
-    assert(col >= 0 && col < 20000);
-    assert(row >= 0 && row < 20000);
+    ATF_REQUIRE(std::abs(col - 7500.0) < 10.0);
+    ATF_REQUIRE(std::abs(row - 12500.0) < 10.0);
+    ATF_REQUIRE(col >= 0 && col < 20000);
+    ATF_REQUIRE(row >= 0 && row < 20000);
 }
 
 // ---------------------------------------------------------------------------
@@ -98,12 +84,12 @@ TEST(test_subsample_cellsize) {
     double area = 1000.0 * 1000.0;  // 1 km²
     size_t maxPoints = 2'000'000;
     double cellSize = std::sqrt(area / static_cast<double>(maxPoints));
-    assert(cellSize > 0.70 && cellSize < 0.71);
+    ATF_REQUIRE(cellSize > 0.70 && cellSize < 0.71);
 
     // For 4 km² at 2M target: cellSize ≈ 1.414m
     area = 2000.0 * 2000.0;
     cellSize = std::sqrt(area / static_cast<double>(maxPoints));
-    assert(cellSize > 1.41 && cellSize < 1.42);
+    ATF_REQUIRE(cellSize > 1.41 && cellSize < 1.42);
 }
 
 // ---------------------------------------------------------------------------
@@ -132,12 +118,12 @@ TEST(test_depth_subsampling) {
     float farKeep = std::min(1.0f / std::max(farN, 1.0f), 1.0f);
 
     // Close points should be kept at higher probability than far points.
-    assert(closeKeep >= farKeep);
+    ATF_REQUIRE(closeKeep >= farKeep);
 
     // Very close points (N < 1) should all be kept.
-    assert(closeKeep <= 1.0f);
-    assert(closeKeep >= 0.0f);
-    assert(farKeep >= 0.0f);
+    ATF_REQUIRE(closeKeep <= 1.0f);
+    ATF_REQUIRE(closeKeep >= 0.0f);
+    ATF_REQUIRE(farKeep >= 0.0f);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,14 +140,14 @@ TEST(test_morton_code) {
         }
         return r;
     };
-    assert(morton2D(0, 0) == 0);
-    assert(morton2D(1, 0) == 1);
-    assert(morton2D(0, 1) == 2);
-    assert(morton2D(1, 1) == 3);
-    assert(morton2D(2, 0) == 4);
-    assert(morton2D(3, 0) == 5);
+    ATF_REQUIRE(morton2D(0, 0) == 0);
+    ATF_REQUIRE(morton2D(1, 0) == 1);
+    ATF_REQUIRE(morton2D(0, 1) == 2);
+    ATF_REQUIRE(morton2D(1, 1) == 3);
+    ATF_REQUIRE(morton2D(2, 0) == 4);
+    ATF_REQUIRE(morton2D(3, 0) == 5);
     // Morton order is monotonic in both X and Y.
-    assert(morton2D(100, 100) > morton2D(50, 50));
+    ATF_REQUIRE(morton2D(100, 100) > morton2D(50, 50));
 }
 
 // ---------------------------------------------------------------------------
@@ -195,9 +181,9 @@ TEST(test_near_far_from_bbox) {
     // nearP = minDist * 0.9, farP = maxDist * 1.5
     float nearP = std::max(0.001f, minDist * 0.9f);
     float farP = maxDist * 1.5f + 0.01f;
-    assert(nearP > 0.0f);
-    assert(farP > nearP);
-    assert(farP / nearP < 10000.0f);  // reasonable depth range
+    ATF_REQUIRE(nearP > 0.0f);
+    ATF_REQUIRE(farP > nearP);
+    ATF_REQUIRE(farP / nearP < 10000.0f);  // reasonable depth range
 }
 
 // ---------------------------------------------------------------------------
@@ -222,11 +208,11 @@ TEST(test_elevation_colors) {
 
     // t=0 → blue (high B, low R)
     const float* c0 = colorAt(0.0f);
-    assert(c0[2] > c0[0]);  // B > R
+    ATF_REQUIRE(c0[2] > c0[0]);  // B > R
 
     // t=1 → red (high R, low B)
     const float* c1 = colorAt(1.0f);
-    assert(c1[0] > c1[2]);  // R > B
+    ATF_REQUIRE(c1[0] > c1[2]);  // R > B
 }
 
 // ---------------------------------------------------------------------------
@@ -277,17 +263,17 @@ TEST(test_tile_resolution) {
     // Close camera → large projected area → fine resolution (small number).
     double resClose = desiredResolutionOBB(tileW, tileH, ext1, ext2, ext3,
                                            /*camDist=*/1.0f, viewportH, tanHalfFov);
-    assert(resClose > 0 && resClose < 50.0);
+    ATF_REQUIRE(resClose > 0 && resClose < 50.0);
 
     // Far camera → small projected area → coarse resolution or skip (0).
     double resFar = desiredResolutionOBB(tileW, tileH, ext1, ext2, ext3,
                                          /*camDist=*/50.0f, viewportH, tanHalfFov);
-    assert(resFar == 0.0 || resFar > resClose);
+    ATF_REQUIRE(resFar == 0.0 || resFar > resClose);
 
     // Very far camera must be capped/skipped, never negative or absurdly small.
     double resVeryFar = desiredResolutionOBB(tileW, tileH, ext1, ext2, ext3,
                                              /*camDist=*/500.0f, viewportH, tanHalfFov);
-    assert(resVeryFar >= 0.0);
+    ATF_REQUIRE(resVeryFar >= 0.0);
 }
 
 // Minimal local Vec3 (NOT glm) — the test target is deliberately
@@ -327,9 +313,9 @@ TEST(test_dem_tess_edge_level) {
     // tessellation level than a far camera.
     float levelClose = edgeTessLevelCPU(a, b, Vec3{0,0,0.5f}, viewportH, tanHalfFov, targetPx);
     float levelFar    = edgeTessLevelCPU(a, b, Vec3{0,0,20.0f}, viewportH, tanHalfFov, targetPx);
-    assert(levelClose >= levelFar);
-    assert(levelClose >= 1.0f && levelClose <= 64.0f);
-    assert(levelFar >= 1.0f && levelFar <= 64.0f);
+    ATF_REQUIRE(levelClose >= levelFar);
+    ATF_REQUIRE(levelClose >= 1.0f && levelClose <= 64.0f);
+    ATF_REQUIRE(levelFar >= 1.0f && levelFar <= 64.0f);
 
     // Determinism: two "patches" sharing this exact edge (same endpoints,
     // regardless of which patch's TCS invocation computes it) must agree —
@@ -338,7 +324,7 @@ TEST(test_dem_tess_edge_level) {
     // since the formula only depends on the edge's midpoint/length.
     float levelForward = edgeTessLevelCPU(a, b, Vec3{0,0,1.0f}, viewportH, tanHalfFov, targetPx);
     float levelReverse = edgeTessLevelCPU(b, a, Vec3{0,0,1.0f}, viewportH, tanHalfFov, targetPx);
-    assert(std::abs(levelForward - levelReverse) < 1e-5f);
+    ATF_REQUIRE(std::abs(levelForward - levelReverse) < 1e-5f);
 }
 
 // Mirrors DEMTessMesh::loadFromDEM()'s computeNormalGL() in
@@ -356,13 +342,13 @@ static Vec3 computeNormalGLCPU(float dElev_dcol, float dElev_drow,
 TEST(test_dem_tess_normal) {
     // Flat terrain (no gradient) -> normal points straight up (GL +Y).
     Vec3 nFlat = computeNormalGLCPU(0.0f, 0.0f, 1.0, -1.0);
-    assert(std::abs(nFlat.x) < 1e-6f);
-    assert(std::abs(nFlat.y - 1.0f) < 1e-6f);
-    assert(std::abs(nFlat.z) < 1e-6f);
+    ATF_REQUIRE(std::abs(nFlat.x) < 1e-6f);
+    ATF_REQUIRE(std::abs(nFlat.y - 1.0f) < 1e-6f);
+    ATF_REQUIRE(std::abs(nFlat.z) < 1e-6f);
 
     // Always unit length regardless of gradient magnitude.
     Vec3 nSlope = computeNormalGLCPU(5.0f, -3.0f, 0.5, -0.5);
-    assert(std::abs(length(nSlope) - 1.0f) < 1e-5f);
+    ATF_REQUIRE(std::abs(length(nSlope) - 1.0f) < 1e-5f);
 
     // Sanity: north-up raster (geoE negative) — increasing elevation
     // northward (dElev_drow > 0, row decreases northward) should tilt the
@@ -370,8 +356,8 @@ TEST(test_dem_tess_normal) {
     // silently collapse to zero or flip sign randomly between calls.
     Vec3 n1 = computeNormalGLCPU(0.0f, 2.0f, 1.0, -1.0);
     Vec3 n2 = computeNormalGLCPU(0.0f, 2.0f, 1.0, -1.0);
-    assert(n1 == n2);  // deterministic
-    assert(std::abs(n1.z) > 1e-6f);  // actually tilted, not flat
+    ATF_REQUIRE(n1 == n2);  // deterministic
+    ATF_REQUIRE(std::abs(n1.z) > 1e-6f);  // actually tilted, not flat
 }
 
 // Mirrors the angular geometric-error criterion in both
@@ -395,20 +381,20 @@ TEST(test_angular_geom_error) {
 
     bool exceedsSmallCell = geomAngleExceededCPU(deviation, /*worldCellSize=*/1.0, 1.0);
     bool exceedsLargeCell = geomAngleExceededCPU(deviation, /*worldCellSize=*/100.0, 1.0);
-    assert(exceedsSmallCell);   // 10cm bump in a 1m cell: steep, must subdivide
-    assert(!exceedsLargeCell);  // 10cm bump in a 100m cell: negligible, stay coarse
+    ATF_REQUIRE(exceedsSmallCell);   // 10cm bump in a 1m cell: steep, must subdivide
+    ATF_REQUIRE(!exceedsLargeCell);  // 10cm bump in a 100m cell: negligible, stay coarse
 
     // Sanity: a truly flat sample (zero deviation) never exceeds any
     // positive angle threshold, regardless of cell size.
-    assert(!geomAngleExceededCPU(0.0, 1.0, 1.0));
-    assert(!geomAngleExceededCPU(0.0, 1000.0, 1.0));
+    ATF_REQUIRE(!geomAngleExceededCPU(0.0, 1.0, 1.0));
+    ATF_REQUIRE(!geomAngleExceededCPU(0.0, 1000.0, 1.0));
 
     // Monotonic in the threshold: a looser (larger) angle threshold can
     // only ever subdivide LESS than a stricter (smaller) one for the same
     // geometry, never more.
     bool strict = geomAngleExceededCPU(deviation, 5.0, 0.5);
     bool loose  = geomAngleExceededCPU(deviation, 5.0, 5.0);
-    assert(!(loose && !strict)); // loose=>strict would be a contradiction here
+    ATF_REQUIRE(!(loose && !strict)); // loose=>strict would be a contradiction here
 }
 
 // Mirrors the TES's density-tied coarse-reference blend in
@@ -429,26 +415,26 @@ TEST(test_density_blend_weight) {
     // crack-avoidance guarantee (§5.1/5.2 of the design doc) completely
     // unaffected by this blend, since neighboring patches only ever need
     // to agree along edges, never in the interior.
-    assert(blendWeightCPU(0.0f, 0.5f) == 0.0f);
-    assert(blendWeightCPU(1.0f, 0.5f) == 0.0f);
-    assert(blendWeightCPU(0.5f, 0.0f) == 0.0f);
-    assert(blendWeightCPU(0.5f, 1.0f) == 0.0f);
+    ATF_REQUIRE(blendWeightCPU(0.0f, 0.5f) == 0.0f);
+    ATF_REQUIRE(blendWeightCPU(1.0f, 0.5f) == 0.0f);
+    ATF_REQUIRE(blendWeightCPU(0.5f, 0.0f) == 0.0f);
+    ATF_REQUIRE(blendWeightCPU(0.5f, 1.0f) == 0.0f);
     // All 4 corners too (both u and v at an extreme).
-    assert(blendWeightCPU(0.0f, 0.0f) == 0.0f);
-    assert(blendWeightCPU(1.0f, 1.0f) == 0.0f);
+    ATF_REQUIRE(blendWeightCPU(0.0f, 0.0f) == 0.0f);
+    ATF_REQUIRE(blendWeightCPU(1.0f, 1.0f) == 0.0f);
 
     // Peaks at the center, positive in the interior.
     float center = blendWeightCPU(0.5f, 0.5f);
-    assert(std::abs(center - 1.0f) < 1e-5f);
+    ATF_REQUIRE(std::abs(center - 1.0f) < 1e-5f);
     float offCenter = blendWeightCPU(0.25f, 0.5f);
-    assert(offCenter > 0.0f && offCenter < center);
+    ATF_REQUIRE(offCenter > 0.0f && offCenter < center);
 }
 
 TEST(test_density_mip_level) {
     // Default-ish density (targetPx ~8) -> a real coarse mip, roughly
     // matching the pre-existing far-corner-only behavior.
     float mipDefault = coarseMipLevelCPU(8.0f);
-    assert(std::abs(mipDefault - 3.0f) < 1e-4f); // log2(8) == 3
+    ATF_REQUIRE(std::abs(mipDefault - 3.0f) < 1e-4f); // log2(8) == 3
 
     // Maximum density (targetPx -> small, clamped to >=0.5 by
     // DEMTessMesh::render()) -> mip level shrinks toward 0, so the
@@ -457,13 +443,13 @@ TEST(test_density_mip_level) {
     // property being requested: "at maximum tessellation, displacement
     // should be minimal."
     float mipMax = coarseMipLevelCPU(0.5f);
-    assert(mipMax < mipDefault);
-    assert(mipMax >= 0.0f); // never negative — textureLod would clamp anyway
+    ATF_REQUIRE(mipMax < mipDefault);
+    ATF_REQUIRE(mipMax >= 0.0f); // never negative — textureLod would clamp anyway
 
     // Monotonic: denser (smaller targetPx) never gives a HIGHER mip level.
     float mipMed = coarseMipLevelCPU(2.0f);
-    assert(mipMed <= mipDefault);
-    assert(mipMax <= mipMed);
+    ATF_REQUIRE(mipMed <= mipDefault);
+    ATF_REQUIRE(mipMax <= mipMed);
 }
 
 // Mirrors Camera::position()'s offset formula (camera.cpp) and the
@@ -493,16 +479,16 @@ TEST(test_recenter_keeps_eye_fixed) {
 
     Vec3 toEye = eye - picked;
     float newDistance = length(toEye);
-    assert(newDistance > 1e-6f);
+    ATF_REQUIRE(newDistance > 1e-6f);
     Vec3 dir{toEye.x / newDistance, toEye.y / newDistance, toEye.z / newDistance};
     float newPitch = std::asin(std::max(-1.0f, std::min(1.0f, dir.y)));
     float newYaw = std::atan2(dir.x, dir.z);
 
     Vec3 recomputedEye = picked + cameraOffsetCPU(newYaw, newPitch, newDistance);
 
-    assert(std::abs(recomputedEye.x - eye.x) < 1e-4f);
-    assert(std::abs(recomputedEye.y - eye.y) < 1e-4f);
-    assert(std::abs(recomputedEye.z - eye.z) < 1e-4f);
+    ATF_REQUIRE(std::abs(recomputedEye.x - eye.x) < 1e-4f);
+    ATF_REQUIRE(std::abs(recomputedEye.y - eye.y) < 1e-4f);
+    ATF_REQUIRE(std::abs(recomputedEye.z - eye.z) < 1e-4f);
 }
 
 // Mirrors the normal-variation threshold derivation in
@@ -521,21 +507,21 @@ static double normalAngleThreshDegCPU(double collapseAngleDeg) {
 
 TEST(test_normal_threshold_scales_with_collapse_angle) {
     // At the 1.0° default, matches the original fixed ~20° behavior.
-    assert(std::abs(normalAngleThreshDegCPU(1.0) - 20.0) < 1e-9);
+    ATF_REQUIRE(std::abs(normalAngleThreshDegCPU(1.0) - 20.0) < 1e-9);
 
     // Scales proportionally, not independently — decreasing the
     // collapsing angle (I key, finer/stricter) must ALSO tighten the
     // normal-variation threshold, not leave it fixed.
     double finer = normalAngleThreshDegCPU(0.5);
     double coarser = normalAngleThreshDegCPU(2.0);
-    assert(finer < 20.0);
-    assert(coarser > 20.0);
-    assert(std::abs(finer - 10.0) < 1e-9);
-    assert(std::abs(coarser - 40.0) < 1e-9);
+    ATF_REQUIRE(finer < 20.0);
+    ATF_REQUIRE(coarser > 20.0);
+    ATF_REQUIRE(std::abs(finer - 10.0) < 1e-9);
+    ATF_REQUIRE(std::abs(coarser - 40.0) < 1e-9);
 
     // Clamped to a sane range regardless of how far I/O is pushed.
-    assert(normalAngleThreshDegCPU(0.01) >= 1.0);
-    assert(normalAngleThreshDegCPU(30.0) <= 89.0);
+    ATF_REQUIRE(normalAngleThreshDegCPU(0.01) >= 1.0);
+    ATF_REQUIRE(normalAngleThreshDegCPU(30.0) <= 89.0);
 }
 
 // Mirrors the fineElev edge-blend in the TES: blending the raw heightmap
@@ -560,16 +546,16 @@ TEST(test_fine_elev_exact_at_boundary) {
     // exactly matching its neighbor, even when the underlying texture
     // doesn't have exact data there.
     float w0 = blendWeightCPU(0.0f, 0.5f); // an edge point
-    assert(w0 == 0.0f);
+    ATF_REQUIRE(w0 == 0.0f);
     float fineAtEdge = blendedFineElevCPU(coarsePosY, rawSampleImprecise, w0);
-    assert(fineAtEdge == coarsePosY);
+    ATF_REQUIRE(fineAtEdge == coarsePosY);
 
     // In the interior (w > 0), the raw sample DOES contribute — real
     // detail isn't lost, only the boundary is protected.
     float wCenter = blendWeightCPU(0.5f, 0.5f);
-    assert(wCenter > 0.0f);
+    ATF_REQUIRE(wCenter > 0.0f);
     float fineAtCenter = blendedFineElevCPU(coarsePosY, rawSampleImprecise, wCenter);
-    assert(std::abs(fineAtCenter - rawSampleImprecise) < std::abs(fineAtCenter - coarsePosY) + 1e-5f);
+    ATF_REQUIRE(std::abs(fineAtCenter - rawSampleImprecise) < std::abs(fineAtCenter - coarsePosY) + 1e-5f);
 }
 
 // Mirrors the core property requested directly ("the triangle's vertices
@@ -590,7 +576,7 @@ TEST(test_displaced_y_exact_regardless_of_slope) {
     // also happened to land exactly here — not a useful distinguishing
     // case on its own, but confirms the new formula doesn't regress it.
     float fineElevFlat = blendedFineElevCPU(coarsePosY, trueHeightmapValue, wCenter);
-    assert(std::abs(fineElevFlat - trueHeightmapValue) < 1e-5f);
+    ATF_REQUIRE(std::abs(fineElevFlat - trueHeightmapValue) < 1e-5f);
 
     // Steep terrain (small normal.y): this is the case that actually
     // distinguishes the two approaches. The direct assignment doesn't
@@ -600,10 +586,10 @@ TEST(test_displaced_y_exact_regardless_of_slope) {
     // falling short of trueHeightmapValue by more as normalY shrinks.
     float normalYSteep = 0.3f;
     float fineElevSteep = blendedFineElevCPU(coarsePosY, trueHeightmapValue, wCenter);
-    assert(std::abs(fineElevSteep - trueHeightmapValue) < 1e-5f); // exact, no attenuation
+    ATF_REQUIRE(std::abs(fineElevSteep - trueHeightmapValue) < 1e-5f); // exact, no attenuation
     float verticalDelta = trueHeightmapValue - coarsePosY;
     float oldFormulaResult = coarsePosY + verticalDelta * normalYSteep * normalYSteep;
-    assert(std::abs(oldFormulaResult - trueHeightmapValue) > 1.0f); // old formula fell meaningfully short
+    ATF_REQUIRE(std::abs(oldFormulaResult - trueHeightmapValue) > 1.0f); // old formula fell meaningfully short
 }
 
 // Mirrors the master-edge distance computed in the TES (src/shaders.cpp,
@@ -616,19 +602,19 @@ TEST(test_master_edge_distance) {
     // Exactly zero at all four edges/corners — must line up with
     // MASTER_EDGE_THRESHOLD in kMeshFrag triggering the red highlight
     // right at the coarse patch boundary.
-    assert(edgeDistCPU(0.0f, 0.5f) == 0.0f);
-    assert(edgeDistCPU(1.0f, 0.5f) == 0.0f);
-    assert(edgeDistCPU(0.5f, 0.0f) == 0.0f);
-    assert(edgeDistCPU(0.5f, 1.0f) == 0.0f);
-    assert(edgeDistCPU(0.0f, 0.0f) == 0.0f);
+    ATF_REQUIRE(edgeDistCPU(0.0f, 0.5f) == 0.0f);
+    ATF_REQUIRE(edgeDistCPU(1.0f, 0.5f) == 0.0f);
+    ATF_REQUIRE(edgeDistCPU(0.5f, 0.0f) == 0.0f);
+    ATF_REQUIRE(edgeDistCPU(0.5f, 1.0f) == 0.0f);
+    ATF_REQUIRE(edgeDistCPU(0.0f, 0.0f) == 0.0f);
 
     // Maximum (0.5) exactly at the patch center — never mistaken for an
     // edge regardless of threshold choice.
-    assert(std::abs(edgeDistCPU(0.5f, 0.5f) - 0.5f) < 1e-6f);
+    ATF_REQUIRE(std::abs(edgeDistCPU(0.5f, 0.5f) - 0.5f) < 1e-6f);
 
     // Monotonic: moving from center toward an edge only ever decreases.
-    assert(edgeDistCPU(0.3f, 0.5f) < edgeDistCPU(0.5f, 0.5f));
-    assert(edgeDistCPU(0.1f, 0.5f) < edgeDistCPU(0.3f, 0.5f));
+    ATF_REQUIRE(edgeDistCPU(0.3f, 0.5f) < edgeDistCPU(0.5f, 0.5f));
+    ATF_REQUIRE(edgeDistCPU(0.1f, 0.5f) < edgeDistCPU(0.3f, 0.5f));
 }
 
 // Mirrors the min/max elevation pyramid build+query in dem_tess_mesh.cpp
@@ -715,7 +701,7 @@ TEST(test_minmax_pyramid_flat_dem) {
     std::vector<bool> nodata(static_cast<size_t>(w)*h, false);
     auto p = buildPyramidCPU(elevs, w, h, nodata);
     auto [mn, mx] = queryPyramidCPU(p, 0, 0, 16, 16);
-    assert(mn == 100.0f && mx == 100.0f);
+    ATF_REQUIRE(mn == 100.0f && mx == 100.0f);
 }
 
 TEST(test_minmax_pyramid_catches_hidden_detail) {
@@ -731,13 +717,13 @@ TEST(test_minmax_pyramid_catches_hidden_detail) {
     std::vector<bool> nodata(static_cast<size_t>(w)*h, false);
     auto p = buildPyramidCPU(elevs, w, h, nodata);
     auto [mn, mx] = queryPyramidCPU(p, 0, 0, 16, 16);
-    assert(mx == 500.0f);
+    ATF_REQUIRE(mx == 500.0f);
     // And the resulting error bound (against a flat 100-valued bilinear
     // plane) must clearly exceed a tight threshold — i.e. this cell would
     // correctly be forced to subdivide, not incorrectly accepted as flat.
     float planeMin = 100.0f, planeMax = 100.0f;
     float errorBound = std::max(mx - planeMin, planeMax - mn);
-    assert(errorBound == 400.0f);
+    ATF_REQUIRE(errorBound == 400.0f);
 }
 
 TEST(test_minmax_pyramid_nodata_handling) {
@@ -750,7 +736,7 @@ TEST(test_minmax_pyramid_nodata_handling) {
         std::vector<bool> nodata(static_cast<size_t>(w)*h, true);
         auto p = buildPyramidCPU(elevs, w, h, nodata);
         auto [mn, mx] = queryPyramidCPU(p, 0, 0, 8, 8);
-        assert(!std::isfinite(mn) && !std::isfinite(mx));
+        ATF_REQUIRE(!std::isfinite(mn) && !std::isfinite(mx));
     }
     // Mixed nodata -> only the valid pixel(s) count, per the +inf/-inf
     // identity-element convention (nodata never wins a min/max against a
@@ -762,19 +748,30 @@ TEST(test_minmax_pyramid_nodata_handling) {
         elevs[5] = 42.0f; nodata[5] = false;
         auto p = buildPyramidCPU(elevs, w, h, nodata);
         auto [mn, mx] = queryPyramidCPU(p, 0, 0, 4, 4);
-        assert(mn == 42.0f && mx == 42.0f);
+        ATF_REQUIRE(mn == 42.0f && mx == 42.0f);
     }
 }
 
-int main() {
-    printf("=== lasviewer unit tests ===\n\n");
-    printf("Ran %d tests, %d passed, %d failed.\n",
-           tests_run, tests_passed, tests_run - tests_passed);
-    if (tests_passed == tests_run) {
-        printf("\nAll tests passed!\n");
-        return 0;
-    } else {
-        printf("\nSOME TESTS FAILED!\n");
-        return 1;
-    }
+ATF_INIT_TEST_CASES(tcs) {
+    ATF_ADD_TEST_CASE(tcs, test_coord_transform);
+    ATF_ADD_TEST_CASE(tcs, test_affine_inverse);
+    ATF_ADD_TEST_CASE(tcs, test_subsample_cellsize);
+    ATF_ADD_TEST_CASE(tcs, test_depth_subsampling);
+    ATF_ADD_TEST_CASE(tcs, test_morton_code);
+    ATF_ADD_TEST_CASE(tcs, test_near_far_from_bbox);
+    ATF_ADD_TEST_CASE(tcs, test_elevation_colors);
+    ATF_ADD_TEST_CASE(tcs, test_tile_resolution);
+    ATF_ADD_TEST_CASE(tcs, test_dem_tess_edge_level);
+    ATF_ADD_TEST_CASE(tcs, test_dem_tess_normal);
+    ATF_ADD_TEST_CASE(tcs, test_angular_geom_error);
+    ATF_ADD_TEST_CASE(tcs, test_density_blend_weight);
+    ATF_ADD_TEST_CASE(tcs, test_density_mip_level);
+    ATF_ADD_TEST_CASE(tcs, test_recenter_keeps_eye_fixed);
+    ATF_ADD_TEST_CASE(tcs, test_normal_threshold_scales_with_collapse_angle);
+    ATF_ADD_TEST_CASE(tcs, test_fine_elev_exact_at_boundary);
+    ATF_ADD_TEST_CASE(tcs, test_displaced_y_exact_regardless_of_slope);
+    ATF_ADD_TEST_CASE(tcs, test_master_edge_distance);
+    ATF_ADD_TEST_CASE(tcs, test_minmax_pyramid_flat_dem);
+    ATF_ADD_TEST_CASE(tcs, test_minmax_pyramid_catches_hidden_detail);
+    ATF_ADD_TEST_CASE(tcs, test_minmax_pyramid_nodata_handling);
 }

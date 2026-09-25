@@ -95,12 +95,15 @@ endif
 # ===========================================================================
 
 TARGET    := lasviewer
-SRC       := main.cpp
-SRC_DIR   := src
-IMGUI_DIR := third_party/imgui
+# Same source tree as the bmake-it build (makefile); this file is kept only
+# to compare against it until the GNU make build is retired.
+SRC       := Viewer/lasviewer.m/src/main.cpp
+SRC_DIR   := Viewer/lasviewer.m/src
+GEO_DIR   := Geo/libgeo.m/src
+IMGUI_DIR := ImGui/libimgui.m/src
 IMGUI_SOURCES := $(addprefix $(IMGUI_DIR)/,imgui.cpp imgui_draw.cpp imgui_tables.cpp \
                  imgui_widgets.cpp imgui_demo.cpp imgui_impl_glfw.cpp imgui_impl_opengl3.cpp)
-SOURCES   := $(SRC) $(wildcard $(SRC_DIR)/*.cpp) $(IMGUI_SOURCES)
+SOURCES   := $(wildcard $(SRC_DIR)/*.cpp) $(wildcard $(GEO_DIR)/*.cpp) $(IMGUI_SOURCES)
 OBJ_DIR   := .build/obj
 OBJECTS   := $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(SOURCES))
 TEST_SRC  := tests/test_basic.cpp
@@ -185,13 +188,13 @@ debug:
 $(OBJ_DIR)/$(IMGUI_DIR)/%.o: $(IMGUI_DIR)/%.cpp | $(OBJ_DIR) .build/config.mk
 	@echo "[cc] $<"
 	@mkdir -p $(dir $@)
-	@$(CXX) -std=c++17 $(if $(findstring -g,$(CXXFLAGS)),-g,-O2) -w -I$(IMGUI_DIR) -isystem $(PORTS)/include \
+	@$(CXX) -std=c++17 $(if $(findstring -g,$(CXXFLAGS)),-g,-O2) -w -IImGui/include -isystem $(PORTS)/include \
 	        $(if $(filter macos,$(OS)),-DGL_SILENCE_DEPRECATION,) -c $< -o $@
 
 $(OBJ_DIR)/%.o: %.cpp | $(OBJ_DIR) .build/config.mk
 	@echo "[cc] $<"
 	@mkdir -p $(dir $@)
-	@CXXFLAGS_OBJ="$(CXXFLAGS) -I. -I$(SRC_DIR) -isystem $(IMGUI_DIR) -isystem $(PORTS) -isystem $(PORTS)/include"; \
+	@CXXFLAGS_OBJ="$(CXXFLAGS) -IGeo/include -IViewer/local/include -isystem ImGui/include -isystem $(PORTS) -isystem $(PORTS)/include"; \
 	if [ "$(OS)" = "macos" ]; then \
 	        CXXFLAGS_OBJ="$$CXXFLAGS_OBJ -DGL_SILENCE_DEPRECATION"; \
 	fi; \
@@ -247,25 +250,9 @@ run: build
 # Test target (no external deps needed)
 # ===========================================================================
 
-test: $(TEST_BIN) $(SCENE_TEST_BIN) $(RASTER_TEST_BIN)
-	@echo "[test] running unit tests..."
-	@./$(TEST_BIN)
-	@./$(SCENE_TEST_BIN)
-	@./$(RASTER_TEST_BIN)
-
-$(RASTER_TEST_BIN): $(RASTER_TEST_SRC) $(wildcard $(SRC_DIR)/*.h) | $(BUILD_DIR)
-	@echo "[test] compiling tests/test_raster.cpp..."
-	$(CXX) -std=c++17 -O1 -Wall -Wextra -DLASVIEWER_NO_OPENMP -isystem $(TEST_INC) $(GDAL_CFLAGS) \
-	        $(RASTER_TEST_SRC) -o $(RASTER_TEST_BIN) $(GDAL_LDFLAGS)
-
-$(SCENE_TEST_BIN): $(SCENE_TEST_SRC) $(wildcard $(SRC_DIR)/*.h) | $(BUILD_DIR)
-	@echo "[test] compiling tests/test_scene.cpp..."
-	$(CXX) -std=c++17 -O1 -Wall -Wextra -isystem $(TEST_INC) $(SCENE_TEST_SRC) -o $(SCENE_TEST_BIN)
-
-$(TEST_BIN): $(TEST_SRC) | $(BUILD_DIR)
-	@echo "[test] compiling $(TEST_SRC)..."
-	$(CXX) $(CXXFLAGS) $(TEST_SRC) -o $(TEST_BIN) $(OMP_LDFLAGS)
-	@echo "[test] compiled."
+test:
+	@echo "[test] the tests are atf-c++ modules now: run 'bmake test' (bmake-it build)"
+	@exit 1
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -318,17 +305,8 @@ VERSION    := $(shell git describe --tags 2>/dev/null || echo "v0.1.0")
 DIST_NAME  := lasviewer
 
 dist:
-	@echo "[dist] creating $(DIST_NAME).tar.gz..."
-	@rm -rf /tmp/$(DIST_NAME)
-	@mkdir -p /tmp/$(DIST_NAME)/src /tmp/$(DIST_NAME)/tests /tmp/$(DIST_NAME)/docs
-	@cp $(SRC) Makefile README.md LICENSE.md specs.md .clang-tidy .clang-format /tmp/$(DIST_NAME)/
-	@cp src/*.cpp src/*.h /tmp/$(DIST_NAME)/src/
-	@mkdir -p /tmp/$(DIST_NAME)/third_party && cp -R $(IMGUI_DIR) /tmp/$(DIST_NAME)/third_party/
-	@cp tests/*.cpp /tmp/$(DIST_NAME)/tests/
-	@cp docs/Doxyfile /tmp/$(DIST_NAME)/docs/
-	@cp docs/*.md /tmp/$(DIST_NAME)/docs/ 2>/dev/null || true
-	@tar czf $(DIST_NAME).tar.gz -C /tmp $(DIST_NAME)
-	@rm -rf /tmp/$(DIST_NAME)
+	@echo "[dist] creating $(DIST_NAME).tar.gz from the committed tree (git archive)..."
+	@git archive --format=tar.gz --prefix=$(DIST_NAME)/ -o $(DIST_NAME).tar.gz HEAD
 	@echo "[dist] created: $(DIST_NAME).tar.gz"
 
 # ===========================================================================

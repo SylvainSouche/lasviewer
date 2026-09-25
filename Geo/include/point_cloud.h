@@ -1,6 +1,5 @@
 // point_cloud.h — LAZ/LAS point cloud loading via PDAL
 #pragma once
-#include "gl_platform.h"
 #include "scene_frame.h"
 #include <glm/glm.hpp>
 #include <string>

@@ -1,9 +1,9 @@
 // lasviewer — 3D viewer for LiDAR point clouds (LAS/LAZ/COPC) and GeoTIFF
 // DEMs, with orthophoto draping. This file only parses the command line; see
 // src/viewer_app.h for the application and src/scene.h for loading.
-#include "src/raster.h"
-#include "src/log_capture.h"
-#include "src/viewer_app.h"
+#include "raster.h"
+#include "log_capture.h"
+#include "viewer_app.h"
 
 #include <algorithm>
 #include <cstdlib>

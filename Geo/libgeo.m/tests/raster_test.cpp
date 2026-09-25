@@ -1,7 +1,7 @@
-// test_raster.cpp — tests of src/raster.cpp against small GeoTIFFs written
-// here with GDAL (no external data needed).
-#include "../src/raster.h"
-#include "../src/scene_frame.h"
+// raster_test.cpp — tests of raster.cpp against small GeoTIFFs written here
+// with GDAL (atf-c++; no external data needed).
+#include "raster.h"
+#include "scene_frame.h"
 
 #include <cpl_conv.h>
 #include <gdal_priv.h>
@@ -12,32 +12,14 @@
 #include <cstdlib>
 #include <fstream>
 #include <string>
-#include <unistd.h>
 #include <vector>
 
-static int g_failed = 0, g_run = 0;
+#include <atf-c++.hpp>
 
-#define CHECK(cond)                                                              \
-    do {                                                                         \
-        if (!(cond)) {                                                           \
-            std::printf("    FAILED: %s (%s:%d)\n", #cond, __FILE__, __LINE__); \
-            ++g_failed;                                                          \
-            return;                                                              \
-        }                                                                        \
-    } while (0)
-
-#define RUN(fn)                                                    \
-    do {                                                           \
-        ++g_run;                                                   \
-        int before = g_failed;                                     \
-        std::printf("  [RUN ] %s\n", #fn);                         \
-        fn();                                                      \
-        if (g_failed == before) std::printf("  [PASS] %s\n", #fn); \
-    } while (0)
+#define CHECK(cond) ATF_REQUIRE(cond)
 
 static bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
 
-static std::string g_dir;
 
 static std::string wktOf(const char* userInput) {
     OGRSpatialReference s;
@@ -54,7 +36,8 @@ static std::string writeTiff(const std::string& name, int w, int h, int bands, G
                              const double* gt, const char* srs,
                              const std::vector<std::vector<double>>& bandValues,
                              const double* nodata = nullptr) {
-    std::string path = g_dir + "/" + name;
+    rasterInit();
+    std::string path = name; // kyua runs each test case in its own scratch dir
     GDALDriver* drv = GetGDALDriverManager()->GetDriverByName("GTiff");
     GDALDataset* ds = drv->Create(path.c_str(), w, h, bands, type, nullptr);
     if (gt) ds->SetGeoTransform(const_cast<double*>(gt));
@@ -76,7 +59,8 @@ static std::string writeTiff(const std::string& name, int w, int h, int bands, G
 
 // Georeferencing: GDAL's corner-origin geotransform becomes the pixel-center
 // affine; EPSG and full-resolution pixels are read correctly.
-static void test_ortho_georef_pixel_center() {
+ATF_TEST_CASE_WITHOUT_HEAD(test_ortho_georef_pixel_center);
+ATF_TEST_CASE_BODY(test_ortho_georef_pixel_center) {
     const double gt[6] = {1000.0, 2.0, 0.0, 5000.0, 0.0, -2.0};
     std::vector<double> r(100), g(100), b(100);
     for (int i = 0; i < 100; ++i) { r[i] = i; g[i] = 2 * i; b[i] = 255 - i; }
@@ -94,7 +78,8 @@ static void test_ortho_georef_pixel_center() {
 
 // Downsampling: pixel count capped, 2x2 blocks averaged, affine rescaled
 // with the pixel-center origin moved to the center of the new pixel.
-static void test_ortho_downsample() {
+ATF_TEST_CASE_WITHOUT_HEAD(test_ortho_downsample);
+ATF_TEST_CASE_BODY(test_ortho_downsample) {
     const double gt[6] = {1000.0, 1.0, 0.0, 5000.0, 0.0, -1.0};
     std::vector<double> v(64 * 64);
     for (int y = 0; y < 64; ++y)
@@ -110,10 +95,11 @@ static void test_ortho_downsample() {
 }
 
 // A .tfw world file (pixel-center convention) georeferences an untagged TIFF.
-static void test_ortho_world_file() {
+ATF_TEST_CASE_WITHOUT_HEAD(test_ortho_world_file);
+ATF_TEST_CASE_BODY(test_ortho_world_file) {
     std::vector<double> v(16, 50);
     std::string p = writeTiff("noref.tif", 4, 4, 3, GDT_Byte, nullptr, nullptr, {v, v, v});
-    std::ofstream(g_dir + "/noref.tfw") << "0.5\n0\n0\n-0.5\n200000.25\n6000000.75\n";
+    std::ofstream("noref.tfw") << "0.5\n0\n0\n-0.5\n200000.25\n6000000.75\n";
     Orthophoto o;
     CHECK(loadOrthophoto(p, o, 1'000'000, ""));
     CHECK(o.hasGeo);
@@ -122,7 +108,8 @@ static void test_ortho_world_file() {
 }
 
 // Declared nodata is honoured (even 0); undeclared falls back to < -9000.
-static void test_dem_nodata() {
+ATF_TEST_CASE_WITHOUT_HEAD(test_dem_nodata);
+ATF_TEST_CASE_BODY(test_dem_nodata) {
     const double gt[6] = {0.0, 1.0, 0.0, 10.0, 0.0, -1.0};
     std::vector<double> v = {0, 5, 10, 15};
     double nd = 0.0;
@@ -141,7 +128,8 @@ static void test_dem_nodata() {
 }
 
 // Terrain RGB: h = (R*65536 + G*256 + B) * 0.1 - 10000.
-static void test_dem_terrain_rgb() {
+ATF_TEST_CASE_WITHOUT_HEAD(test_dem_terrain_rgb);
+ATF_TEST_CASE_BODY(test_dem_terrain_rgb) {
     const double gt[6] = {0.0, 1.0, 0.0, 10.0, 0.0, -1.0};
     // 1234.5 m → (1234.5 + 10000) / 0.1 = 112345 = 1*65536 + 182*256 + 217
     std::string p = writeTiff("trgb.tif", 1, 1, 3, GDT_Byte, gt, "EPSG:2154",
@@ -153,7 +141,8 @@ static void test_dem_terrain_rgb() {
 }
 
 // CRS helpers: a compound CRS matches its horizontal part.
-static void test_crs_helpers() {
+ATF_TEST_CASE_WITHOUT_HEAD(test_crs_helpers);
+ATF_TEST_CASE_BODY(test_crs_helpers) {
     std::string l93 = wktOf("EPSG:2154"), l93ngf = wktOf("EPSG:2154+5720"), wgs = wktOf("EPSG:4326");
     CHECK(sameHorizontalCRS(l93, l93ngf));
     CHECK(!sameHorizontalCRS(l93, wgs));
@@ -171,7 +160,8 @@ static void test_crs_helpers() {
 // A DEM in another CRS is warped into the scene CRS: a linear ramp in
 // longitude read back at a Lambert-93 point matches the value expected at
 // that point's longitude.
-static void test_dem_warped_into_scene_crs() {
+ATF_TEST_CASE_WITHOUT_HEAD(test_dem_warped_into_scene_crs);
+ATF_TEST_CASE_BODY(test_dem_warped_into_scene_crs) {
     const double lon0 = 6.75, lat0 = 46.07, step = 0.0005;
     const int n = 100;
     const double gt[6] = {lon0, step, 0.0, lat0, 0.0, -step};
@@ -209,7 +199,8 @@ static void test_dem_warped_into_scene_crs() {
 }
 
 // A rotated grid (in the scene CRS already) is resampled to north-up.
-static void test_dem_rotated_grid_made_north_up() {
+ATF_TEST_CASE_WITHOUT_HEAD(test_dem_rotated_grid_made_north_up);
+ATF_TEST_CASE_BODY(test_dem_rotated_grid_made_north_up) {
     const double a = 0.3; // radians
     const double gt[6] = {1000.0, std::cos(a), std::sin(a), 5000.0, std::sin(a), -std::cos(a)};
     std::vector<double> v(20 * 20, 42.0);
@@ -223,23 +214,13 @@ static void test_dem_rotated_grid_made_north_up() {
     CHECK(valid > d.elevations.size() / 3 && valid < d.elevations.size());
 }
 
-int main() {
-    rasterInit();
-    char tmpl[] = "/tmp/lasviewer-raster-XXXXXX";
-    const char* dir = mkdtemp(tmpl);
-    if (!dir) return 2;
-    g_dir = dir;
-    std::printf("=== lasviewer raster tests (%s) ===\n", dir);
-    RUN(test_ortho_georef_pixel_center);
-    RUN(test_ortho_downsample);
-    RUN(test_ortho_world_file);
-    RUN(test_dem_nodata);
-    RUN(test_dem_terrain_rgb);
-    RUN(test_crs_helpers);
-    RUN(test_dem_warped_into_scene_crs);
-    RUN(test_dem_rotated_grid_made_north_up);
-    std::printf("\nRan %d tests, %d passed, %d failed.\n", g_run, g_run - g_failed, g_failed);
-    std::string cmd = "rm -rf '" + g_dir + "'";
-    if (std::system(cmd.c_str()) != 0) std::printf("(could not remove %s)\n", dir);
-    return g_failed == 0 ? 0 : 1;
+ATF_INIT_TEST_CASES(tcs) {
+    ATF_ADD_TEST_CASE(tcs, test_ortho_georef_pixel_center);
+    ATF_ADD_TEST_CASE(tcs, test_ortho_downsample);
+    ATF_ADD_TEST_CASE(tcs, test_ortho_world_file);
+    ATF_ADD_TEST_CASE(tcs, test_dem_nodata);
+    ATF_ADD_TEST_CASE(tcs, test_dem_terrain_rgb);
+    ATF_ADD_TEST_CASE(tcs, test_crs_helpers);
+    ATF_ADD_TEST_CASE(tcs, test_dem_warped_into_scene_crs);
+    ATF_ADD_TEST_CASE(tcs, test_dem_rotated_grid_made_north_up);
 }

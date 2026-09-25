@@ -4,3 +4,11 @@
 /lasviewer.tar.gz
 /docs/html/
 .DS_Store
+# bmake-it outputs
+build/
+distrib/
+build-report/
+test-report/
+.gen-mod-order.mk
+.gen-fw-order.mk
+.depend

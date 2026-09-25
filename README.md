@@ -28,42 +28,52 @@ A lightweight C++ viewer for **LAZ/LAS/COPC point clouds** and **GeoTIFF DEMs**,
 
 **macOS (MacPorts):**
 ```bash
-sudo port install glfw pdal gdal glm pkgconfig
+sudo port install glfw pdal gdal glm pkgconfig bmake atf kyua
 ```
 
 **macOS (Homebrew):**
 ```bash
-brew install glfw pdal gdal glm pkg-config
+brew install glfw pdal gdal glm pkg-config bmake
 ```
 
 **Linux (Debian/Ubuntu):**
 ```bash
-sudo apt install libglfw3-dev libpdal-dev libgdal-dev libglm-dev pkg-config
+sudo apt install libglfw3-dev libpdal-dev libgdal-dev libglm-dev pkg-config bmake
 ```
 
-GDAL is also a PDAL dependency, so it's normally installed already. Dear ImGui is vendored in `third_party/imgui` (v1.91.9b, MIT), so there's nothing to install for it.
+GDAL is also a PDAL dependency, so it's normally installed already. Dear ImGui is vendored in `ImGui/` (v1.91.9b, MIT), so there's nothing to install for it. ATF and Kyua are needed only for `bmake test`.
+
+The build uses [bmake-it](https://github.com/SylvainSouche/bmake-it), a BSD-make build system. Get it once and let bmake find its `mk/` files:
+
+```bash
+git clone https://github.com/SylvainSouche/bmake-it.git
+sh bmake-it/scripts/install-env.sh      # adds MAKESYSPATH to your shell rc; or:
+export MAKESYSPATH=/path/to/bmake-it/mk:/opt/local/share/mk
+```
+
+> **Current bmake-it needs one fix on macOS.** Imported libraries are staged as dangling symlinks, because only `lib<LIB>.dylib` is copied and not the versioned file it points to (`lib<LIB>.<N>.dylib`). Until that fix is in bmake-it, the link fails with "has not been built yet".
 
 ### Build
 
 ```bash
-make build
+bmake            # → build/macos-arm64/bin/lasviewer (build/<os>-<arch>/ on other hosts)
 ```
 
 ### Run
 
 ```bash
 # One point cloud (LAS/LAZ loaded in full, .copc.laz streamed)
-./lasviewer cloud.laz
-./lasviewer cloud.copc.laz ortho.tif
+build/macos-arm64/bin/lasviewer cloud.laz
+build/macos-arm64/bin/lasviewer cloud.copc.laz ortho.tif
 
 # Several tiles + one orthophoto
-./lasviewer tile_a.copc.laz tile_b.copc.laz -o ortho.tif
+build/macos-arm64/bin/lasviewer tile_a.copc.laz tile_b.copc.laz -o ortho.tif
 
 # A DEM with a point cloud on top
-./lasviewer dem.tif cloud.copc.laz -o ortho.tif
+build/macos-arm64/bin/lasviewer dem.tif cloud.copc.laz -o ortho.tif
 ```
 
-On the command line, `.tif` files are sorted by content: 8-bit RGB(A) imagery is the orthophoto, and elevation rasters are DEMs. 8-bit Terrain-RGB DEMs look like imagery, so pass them with `-d`. Run `./lasviewer -h` for all options.
+On the command line, `.tif` files are sorted by content: 8-bit RGB(A) imagery is the orthophoto, and elevation rasters are DEMs. 8-bit Terrain-RGB DEMs look like imagery, so pass them with `-d`. Run `lasviewer -h` for all options.
 
 ---
 
@@ -117,17 +127,28 @@ pdal translate cloud.copc.laz dsm.tif --readers.copc.resolution=0.5 \
 
 ## Build System
 
+The build is [bmake-it](https://github.com/SylvainSouche/bmake-it): a workspace (this directory) of frameworks, each holding modules (`*.m`). External libraries are ordinary frameworks whose library module imports the installed library (`IMPORT=`) instead of compiling it, so they're used exactly like the project's own libraries.
+
 ```bash
-make            # build (default)
-make debug      # -g build → lasviewer-debug
-make test       # unit tests (test_basic: formulas; test_scene: frame + camera; test_raster: GDAL raster I/O)
-make lint       # clang-tidy / cppcheck
-make fmt        # clang-format
-make dist       # source tarball
-make doc        # Doxygen
-make clean
-make run ARGS="cloud.copc.laz ortho.tif"
+bmake                 # build everything for the host (build/<os>-<arch>/)
+bmake test            # atf-c++ tests via Kyua (raster_test, basic_test, scene_test)
+bmake clean
+bmake help
+cd Geo && bmake       # build / test one framework (or one module: cd Geo/libgeo.m)
 ```
+
+| Framework | Contents | Notes |
+|---|---|---|
+| `PDAL`, `GDAL`, `GLFW`, `GLM` | imported libraries | headers staged from the install; GLM is header-only |
+| `ImGui` | Dear ImGui, compiled (`libimgui.a`) | vendored source, warnings off |
+| `Geo` | `libgeo.a`: point-cloud (PDAL) and raster (GDAL) I/O | no OpenGL; `raster_test` |
+| `Viewer` | the `lasviewer` program | `basic_test`, `scene_test` |
+
+Headers follow bmake-it's visibility rules: `<fw>/include/` is public (reached through `PREREQS=`), `<fw>/local/include/` is shared by that framework's modules, `<module>/include/` is private.
+
+Per-target settings live in `mk/` hook files next to the module, for example `Viewer/lasviewer.m/mk/local.macos.mk` (OpenGL frameworks) or `GLM/libglm.m/mk/pre.macos.mk` (where glm's headers are).
+
+`GNUmakefile` (plain GNU make, `make build`) builds the same binary from the same tree; it is kept temporarily, for comparison.
 
 `--snapshot out.ppm` renders until every layer has finished loading, saves the frame, and exits. It's useful for scripted visual checks.
 
@@ -136,28 +157,32 @@ make run ARGS="cloud.copc.laz ortho.tif"
 ## Architecture
 
 ```
-main.cpp                 command line → LoadPlan → ViewerApp
-src/
-  viewer_app.h/.cpp      window, GL context, frame loop, input routing, picking
-  viewer_ui.cpp          ImGui panels (layers, view, info, log, help)
-  camera.h/.cpp          orbit camera, projection, near/far from bounds
-  camera_controller.*    mouse/keyboard navigation, double-click focus
-  scene.h/.cpp           Scene: layers + shared frame + orthophoto; loading
-  scene_frame.h          world ↔ GL transform shared by all layers
-  layer.h                Layer interface, RenderContext, ViewSettings
-  point_cloud_layer.*    LAS/LAZ loaded in full
-  copc_layer.*           COPC streaming layer (wraps TileGrid)
-  copc_streamer.*        TileGrid: loader thread, tile LOD, upload, draw
-  dem_layer.*            DEM layer (wraps DEMTessMesh)
-  dem_tess_mesh.*        adaptive quadtree + GPU tessellation, background rebuilds
-  hiz.*                  scene-wide Hi-Z occlusion pyramid, frustum test
-  point_cloud.*          PDAL loading, header reading
-  raster.*               GDAL raster I/O: orthophotos, DEMs, CRS, warping
-  shaders.*              embedded GLSL + compile/link helpers
-  log_capture.*          std::cerr → in-app log (thread-safe)
-third_party/imgui/       Dear ImGui core + GLFW/OpenGL3 backends
-tests/                   test_basic.cpp, test_scene.cpp, test_raster.cpp
-docs/                    design notes (DEM tessellation), Doxyfile
+makefile                     bmake-it workspace
+PDAL/ GDAL/ GLFW/ GLM/       imported libraries (IMPORT= modules, mk/ hooks)
+ImGui/                       Dear ImGui: include/ (public), libimgui.m/src/
+Geo/
+  include/                   public: point_cloud.h, raster.h, scene_frame.h
+  libgeo.m/src/              point_cloud.cpp (PDAL), raster.cpp (GDAL raster I/O, CRS, warping)
+  libgeo.m/tests/            raster_test.cpp
+Viewer/
+  local/include/             headers shared inside Viewer
+  lasviewer.m/src/
+    main.cpp                 command line → LoadPlan → ViewerApp
+    viewer_app.cpp           window, GL context, frame loop, input routing, picking
+    viewer_ui.cpp            ImGui panels (layers, view, info, log, help)
+    camera.cpp               orbit camera, projection, near/far from bounds
+    camera_controller.cpp    mouse/keyboard navigation, double-click focus
+    scene.cpp                Scene: layers + shared frame + orthophoto; loading
+    point_cloud_layer.cpp    LAS/LAZ loaded in full
+    copc_layer.cpp           COPC streaming layer (wraps TileGrid)
+    copc_streamer.cpp        TileGrid: loader thread, tile LOD, upload, draw
+    dem_layer.cpp            DEM layer (wraps DEMTessMesh)
+    dem_tess_mesh.cpp        adaptive quadtree + GPU tessellation, background rebuilds
+    hiz.cpp                  scene-wide Hi-Z occlusion pyramid, frustum test
+    shaders.cpp              embedded GLSL + compile/link helpers
+    log_capture.cpp          std::cerr → in-app log (thread-safe)
+  lasviewer.m/tests/         basic_test.cpp (formulas), scene_test.cpp (frame + camera)
+docs/                        design notes (DEM tessellation), Doxyfile
 ```
 
 **Loading.** The scene first reads every input's header (PDAL metadata; GDAL for rasters), picks the scene CRS, expresses every extent in it, and fixes one `SceneFrame` from their union:
@@ -178,7 +203,7 @@ It then loads the orthophoto once (warped into the scene CRS if needed) and crea
 5. Any pending double-click pick is resolved from the depth buffer.
 6. The UI is drawn.
 
-Adding a new data type means writing one `Layer` subclass.
+Adding a new data type means writing one `Layer` subclass (in `Viewer/`); the `Layer` interface is in `Viewer/local/include/layer.h`.
 
 ---
 
@@ -195,4 +220,4 @@ Adding a new data type means writing one `Layer` subclass.
 
 ## License
 
-BSD 3-Clause License. See [LICENSE.md](LICENSE.md). Dear ImGui is MIT-licensed (`third_party/imgui/LICENSE.txt`).
+BSD 3-Clause License. See [LICENSE.md](LICENSE.md). Dear ImGui is MIT-licensed (`ImGui/LICENSE.txt`).
