@@ -286,6 +286,7 @@ bool readCloudHeader(const std::string& path, CloudHeader& out) {
         pdal::SpatialReference srs = reader->getSpatialReference();
         if (srs.empty()) srs = table.anySpatialReference();
         if (!srs.empty()) {
+            out.wkt = srs.getWKT();
             std::string code = srs.identifyHorizontalEPSG();
             if (!code.empty()) out.epsg = std::stoi(code);
         }

@@ -11,6 +11,7 @@
 #include <glm/glm.hpp>
 #include <algorithm>
 #include <limits>
+#include <string>
 
 struct WorldBounds {
     glm::dvec3 min{std::numeric_limits<double>::max()};
@@ -34,6 +35,9 @@ struct SceneFrame {
     // Elevation range used by point-cloud elevation ramps, so that every
     // layer/tile maps the same elevation to the same color.
     double zMin = 0.0, zMax = 1.0;
+    // The scene's CRS (WKT; empty = unknown). Rasters in another horizontal
+    // CRS are warped into it on load.
+    std::string crsWkt;
 
     glm::vec3 toGL(double x, double y, double z) const {
         double inv = 1.0 / scale;

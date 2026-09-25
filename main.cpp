@@ -1,7 +1,7 @@
 // lasviewer — 3D viewer for LiDAR point clouds (LAS/LAZ/COPC) and GeoTIFF
 // DEMs, with orthophoto draping. This file only parses the command line; see
 // src/viewer_app.h for the application and src/scene.h for loading.
-#include "src/geotiff.h"
+#include "src/raster.h"
 #include "src/log_capture.h"
 #include "src/viewer_app.h"
 
@@ -78,7 +78,8 @@ bool parseArgs(int argc, char** argv, LoadPlan& plan, std::string& snapshot) {
         } else {
             std::string ext = lowerExt(arg);
             if (ext == "tif" || ext == "tiff") {
-                if (tiffLooksLikeImage(arg)) images.push_back(arg);
+                RasterInfo info;
+                if (readRasterInfo(arg, info) && info.byteImage) images.push_back(arg);
                 else plan.dems.push_back(arg);
             } else {
                 plan.clouds.push_back(arg);

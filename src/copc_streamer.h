@@ -15,7 +15,7 @@
 #include <thread>
 #include <vector>
 
-struct Orthophoto; // geotiff.h
+struct Orthophoto; // raster.h
 struct RenderContext; // layer.h
 
 struct Tile {

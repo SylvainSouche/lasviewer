@@ -1131,6 +1131,8 @@ situation actually applies via the histogram.
 
 ### 6p. CRASH: unregistered custom TIFF tag caused a type-confusion EXC_BAD_ACCESS (fixed — §6m regression)
 
+> **Resolved differently (GDAL raster I/O).** Declared nodata values are now read with GDAL's `GetNoDataValue()`; the libtiff-based reading described in §6p/§6p-2 no longer exists. Kept as history.
+
 §6m's nodata fix (`readDEMNodataValue()`) crashed on real hardware:
 
 ```
@@ -1536,6 +1538,8 @@ fit than the traversal itself), but not hand-vectorized with intrinsics
 in this pass.
 
 ### 6u. CRS mismatch: read both files' actual CRS, reproject with PROJ when they differ (implemented)
+
+> **Superseded (GDAL raster I/O).** Raster reading moved to GDAL (`src/raster.*`). The scene now has one CRS, and orthophotos and DEMs in another CRS are warped into it pixel by pixel on load, so the corner-based affine refit below, the hand-written GeoKey parsing and the direct PROJ dependency are gone. Kept as history.
 
 §6r's "orthophoto doesn't overlap the DEM" fallback (skip texturing rather
 than stretch a mismatched image) was working as designed — but it never

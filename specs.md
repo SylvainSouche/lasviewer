@@ -19,7 +19,7 @@ Windowing toolkit: **GLFW** (minimal, lightweight, no native widgets required).
 LAS/LAZ reader: **PDAL** (`readers.copc`, `readers.las`, etc.).
 
 ### 1.5
-TIFF/GeoTIFF reader: **libtiff** (with manual GeoTIFF tag reading via `TIFFGetField` — no libgeotiff dependency).
+Raster reader: **GDAL** (orthophotos, DEMs, georeferencing, CRS, reprojection), in `src/raster.*`. GDAL is already a PDAL dependency. It replaced hand-written GeoTIFF tag parsing on libtiff plus a direct PROJ dependency; neither libtiff nor PROJ is linked directly any more.
 
 ### 1.6
 Math library: **glm** (header-only).
@@ -47,19 +47,19 @@ OpenMP: enabled by default (`-fopenmp`) for parallel point cloud loading and col
 Load **LAZ/LAS point clouds** via PDAL (supports `.las`, `.laz`, `.copc.laz`).
 
 ### 2.2
-Load **GeoTIFF DEMs / DSMs** (elevation rasters). They are rendered as a GPU-tessellated adaptive mesh (§9.7). Supported sample formats: Float32/64 and Int16/32/UInt16/Byte, via scanline or tile reads (never `TIFFReadRGBAImageOriented`, which corrupts numeric elevations). Also supports **Terrain RGB** (8-bit, 3+ bands): `elevation = (R*65536 + G*256 + B) * 0.1 - 10000`, IGN's MNS LiDAR HD convention; values below -9000 are treated as nodata.
+Load **DEMs / DSMs** from any raster GDAL reads, rendered as a GPU-tessellated adaptive mesh (§9.7). Band 1 is read as Float32. An 8-bit raster with ≥3 bands is decoded as **Terrain RGB**: `elevation = (R*65536 + G*256 + B) * 0.1 - 10000` (IGN MNS LiDAR HD); decoded values below -9000 become nodata (-9999). The file's declared nodata value is honoured; when none is declared, values below -9000 (and NaN) are nodata.
 
 ### 2.3
-Load **GeoTIFF orthophotos** (RGB/RGBA) for point cloud colorization. Supports JPEG-compressed and LZW-compressed TIFFs.
+Load **orthophotos** from any raster GDAL reads (RGB/RGBA, grayscale replicated to RGB), as RGBA8. Non-8-bit imagery is clamped to 0–255 (a warning is logged).
 
 ### 2.4
-Read **GeoTIFF tags** (`ModelPixelScaleTag` 33550, `ModelTiepointTag` 33922) directly via `TIFFGetField`. No `.tfw` sidecar required, but `.tfw` is a fallback if GeoTIFF tags are absent.
+Georeferencing comes from GDAL: GeoTIFF tags, world files (`.tfw`, `.wld`), or the format's own metadata. An orthophoto without any georeferencing is still accepted (stretched over a DEM, §9.8; not usable to color points).
 
 ### 2.5
-GeoTIFF Area raster convention: tiepoint is the top-left CORNER of the pixel. Offset by half a pixel to get pixel-center origin (matching `.tfw` convention).
+GDAL's geotransform uses the top-left **corner** of the top-left pixel; the viewer's affine (`RasterGeo`: A, B, C, D, E, F) uses its **center**: `C = gt0 + gt1/2 + gt2/2`, `F = gt3 + gt4/2 + gt5/2`. This is computed after any downsampling, so the center origin follows the resampled pixel size.
 
 ### 2.6
-GeoTIFF `ModelPixelScaleTag` stores absolute values. For north-up orthophotos, the effective Y scale is **negative** (rows go down, world Y goes up). Must negate `scaleY` when synthesizing the affine.
+Rotated or sheared grids (B ≠ 0 or D ≠ 0) are resampled to north-up on load (GDAL warp), since the rest of the viewer assumes north-up rasters.
 
 ### 2.7
 Command-line interface:
@@ -76,7 +76,7 @@ Command-line interface:
 ## 3. Coordinate System & Georeferencing
 
 ### 3.1
-Work in the data's native CRS (e.g. Lambert-93 / EPSG:2154). Each input's horizontal EPSG code is read (PDAL spatial reference for clouds, GeoKeyDirectory for rasters), shown in the UI, and a warning is logged when inputs disagree. Only the DEM texture is reprojected (§9.8); point clouds and DEMs are not.
+One **scene CRS**: the first input that declares one, point clouds first, then DEMs, then the orthophoto. CRSs are compared on their **horizontal** part only (a compound `EPSG:2154+5720` equals `EPSG:2154`). Orthophotos and DEMs in another horizontal CRS are **warped into the scene CRS on load** (GDAL, bilinear; DEM gaps become nodata, orthophoto gaps get alpha 0), so every layer and the ortho texture share one coordinate system. Point clouds are not reprojected: one in another CRS is reported and will be misplaced. EPSG codes are shown in the UI.
 
 ### 3.2
 World-to-GL transform, **shared by every layer of a scene** (`SceneFrame`, `src/scene_frame.h`):
@@ -100,13 +100,13 @@ The frame is fixed **before any layer loads**, from the union of all inputs' hea
 Orthophoto affine transformed to GL space (including Z negation) for colorization purposes only. The orthophoto quad is NOT rendered as a flat plane (see spec 9.6).
 
 ### 3.7
-Orthophoto colorization: each point's world (X, Y) is inverse-transformed through the GeoTIFF affine to find the corresponding pixel, then bilinearly sampled. Points outside the orthophoto extent are colored mid-dark gray (0.35, 0.35, 0.35).
+Orthophoto colorization: each point's world (X, Y) is inverse-transformed through the orthophoto's affine (full 2×2 inverse) to a pixel, then bilinearly sampled. Points outside the orthophoto are colored mid-dark gray (0.35, 0.35, 0.35).
 
 ### 3.8
 Orthophoto colorization must account for the Z negation: `worldY = -gz × scale + centerY`. The negation is baked into the inverse-affine coefficients (`kColZ`, `kRowZ`).
 
 ### 3.9
-**Coverage gate** (per point-cloud layer): the orthophoto colors a cloud only if it is georeferenced (tags or `.tfw`), uses the same EPSG code when both are known, and covers at least **25%** of the cloud's XY extent. Otherwise that layer falls back to elevation (or file RGB) colors and a message is logged. Earlier single-file versions aborted instead; with several layers, one uncovered tile must not stop the others. Coverage is logged for every layer.
+**Coverage gate** (per point-cloud layer): the orthophoto colors a cloud only if it is georeferenced, the cloud is in the scene CRS (the ortho always is, §3.1), and the ortho covers at least **25%** of the cloud's XY extent. Otherwise that layer uses elevation (or file RGB) colors and a message is logged. Coverage is logged for every layer.
 
 ---
 
@@ -171,30 +171,22 @@ Non-COPC files (regular `.las`/`.laz`, DEMs) use the existing single-VBO path �
 
 ---
 
-## 6. TIFF Handling
+## 6. Raster Handling (GDAL)
 
 ### 6.1
-TIFF dimensions capped at 100,000 × 100,000 and 2 GB raw raster. Larger files are refused.
+Rasters are opened with GDAL (`GDALDataset::Open`, read-only); an unreadable file or one without bands is an error for that input only.
 
 ### 6.2
-Orthophoto pixel buffer capped at ~64M pixels (256 MB RGBA) to keep memory and colorization time reasonable. Larger images are downsampled.
+The orthophoto is capped at **64M pixels**: larger images are read at a reduced size with GDAL's **averaging** resampler, which uses the file's own overviews when present (e.g. COG), so large orthophotos load fast without reading every full-resolution pixel. Warped orthophotos go through a lazy warped VRT: pixels are warped as they are read, from the source's overviews when it has them; without overviews the warp runs at full resolution before averaging (slower for very large images).
 
 ### 6.3
-**Box-filter downsampling** with correct fractional pixel mapping:
-```
-sx0 = floor(x * srcW / dstW)
-sx1 = floor((x+1) * srcW / dstW)
-```
-Must cover the full source image [0, srcW) with no gaps. Integer division (`bx = srcW / dstW`) is FORBIDDEN — it truncates and discards up to 26% of the image.
+After downsampling, the affine is rescaled from the source geotransform (§2.5); the pixel-center origin moves to the center of the new, larger top-left pixel.
 
 ### 6.4
-After downsampling, the GeoTIFF affine must be **rescaled** to match the new pixel size: `A *= srcW/dstW`, `E *= srcH/dstH`. C and F (origin) don't change.
+DEMs are read in full at native resolution (the GPU heightmap has its own texel cap, §9.7). A warped DEM is warped to an in-memory Float32 raster with nodata −9999 (or the source's declared value).
 
 ### 6.5
-DEM loading uses `TIFFReadScanline` (scanline-based, not `TIFFReadRGBAImage`). Supports multiple sample formats (IEEEFP, INT, UINT) and bit depths (8, 16, 32, 64).
-
-### 6.6
-Nodata values (typically -9999 or -32768) are clamped to 0.
+Terrain-RGB DEMs are decoded before any warp (warping encoded RGB would be meaningless): the decoded elevations are wrapped in an in-memory dataset, which is then warped.
 
 ---
 
@@ -286,10 +278,10 @@ Orthophoto quad NOT rendered as a flat plane in the point-cloud path — only us
 **DEM/DSM mesh**: a GPU-tessellated adaptive quadtree (`DEMTessMesh`; design in `docs/design-tessellation-displacement.md`). The CPU builds patches (subdivision by angular geometric error and texture span, balance pass, nodata-aware); the tessellation shaders refine them and displace them from an R32F heightmap. The coarsest level (maxLevel 0) is shown immediately and the full mesh is built on a background thread, then swapped in; parameter changes (max level, collapsing angle) rebuild the same way. The old CPU-triangulated fallback (`DEMMesh`) was removed: GL 4.1 is available on all supported macOS hardware.
 
 ### 9.8
-DEM mesh texturing: both the DEM's and the orthophoto's actual CRS (EPSG code) are read from each file's GeoKeyDirectoryTag (`readEPSGCode()`, geotiff.cpp) — not just their affine transforms, which alone can't reveal a CRS difference. If they differ and PROJ is available (optional dependency, see specs.md §12.1/Makefile), the orthophoto's 4 corners are reprojected via PROJ into the DEM's CRS and a new affine is re-fit (`reprojectToMatchCRS()`) before the normal world→UV transform is used. If PROJ isn't available, or the reprojection pipeline itself fails, or the two rasters still don't overlap even after a successful reprojection (same CRS now, but genuinely different ground coverage), texturing is skipped entirely rather than stretched — stretching would show imagery from a completely unrelated location, worse than no texture (console prints a warning with both extents, both EPSG codes if known, and a `gdalwarp` command using the DEM's *actual* EPSG code). If the orthophoto has no geo tags at all, it's stretched over the DEM extent instead — a deliberate convenience for pairing an untagged image with a DEM, since there's no correspondence metadata to contradict there. If no orthophoto is supplied, or the one supplied isn't usable per the above, the mesh shader falls back to an elevation color ramp: **dark blue-violet → teal → yellow** (3-stop, viridis-inspired) — distinct from the point cloud's 5-stop blue→cyan→green→yellow→red ramp (§9.2).
+DEM mesh texturing: the orthophoto and the DEM are both in the scene CRS (§3.1), so the texture coordinates follow directly from their affines. If a georeferenced ortho doesn't overlap the DEM, texturing is skipped for that DEM (elevation ramp) rather than stretching unrelated imagery over it. An ortho with no georeferencing at all is stretched over the DEM extent. Without an orthophoto the mesh uses an elevation ramp: **dark blue-violet → teal → yellow** (3 stops), distinct from the point cloud's 5-stop ramp (§9.2).
 
 ### 9.9
-DEM elevation is read via `TIFFReadScanline`/`TIFFReadTile` (never `TIFFReadRGBAImageOriented`, which would corrupt numeric elevation through an RGBA/YCbCr decode step). Supports UInt8/16/32, Int16/32, Float32/64, and Terrain RGB encoding (§2.2).
+DEM elevations are read through GDAL as Float32 (`GDALRasterBand::RasterIO`), for any sample type; Terrain RGB per §2.2.
 
 ---
 
@@ -375,13 +367,13 @@ Targets:
 - `make help` — show all targets
 
 ### 12.2b
-`make build` needs GLFW, PDAL, libtiff and glm. Dear ImGui is compiled from `third_party/imgui` (warnings suppressed for third-party code). Header dependencies are tracked with `-MMD -MP`.
+`make build` needs GLFW, PDAL, GDAL and glm (GDAL flags from `pkg-config gdal`; not repeated at link time when PDAL's own link line already contains it). Dear ImGui is compiled from `third_party/imgui` (warnings suppressed for third-party code). Header dependencies are tracked with `-MMD -MP`.
 
 ### 12.2c
-**PROJ** is optional, detected with `pkg-config proj`. MacPorts keeps its `.pc` in a versioned prefix, so `/opt/local/lib/proj9/lib/pkgconfig` (then `proj8`) is searched as well, preferring the PROJ that GDAL already loads. When found, `LASVIEWER_HAS_PROJ` enables DEM/orthophoto reprojection (§9.8).
+No optional dependencies remain: PROJ is used only through GDAL.
 
 ### 12.3
-`make test` builds two runners. `test_basic` is self-contained formula checks with no dependencies. `test_scene` links the real `camera.cpp` and `camera_controller.cpp` and uses `scene_frame.h`; it needs the glm and GLFW headers but no GL context.
+`make test` builds three runners. `test_basic` is self-contained formula checks with no dependencies. `test_scene` links the real `camera.cpp` and `camera_controller.cpp` (glm and GLFW headers, no GL context). `test_raster` links the real `raster.cpp` against GDAL and writes its own small GeoTIFFs in a temporary directory.
 
 ### 12.4
 `.clang-tidy` config: bugprone-*, cert-*, misc-*, modernize-*, performance-*, readability-* checks. Magic numbers and identifier length suppressed.
@@ -397,15 +389,14 @@ Targets:
 ## 13. Testing
 
 ### 13.1
-`tests/test_basic.cpp` verifies core formulas by re-deriving them locally. `tests/test_scene.cpp` tests the real frame and camera code.
+`tests/test_basic.cpp` verifies core formulas by re-deriving them locally. `tests/test_scene.cpp` tests the real frame and camera code. `tests/test_raster.cpp` tests the real GDAL raster I/O: pixel-center georeferencing, downsampling and affine rescale, `.tfw` world files, declared and undeclared nodata, Terrain RGB decoding, horizontal CRS comparison and extent transformation, warping a DEM from EPSG:4326 into EPSG:2154 (value checked at a transformed point), and a rotated grid made north-up.
 
 ### 13.2
 Test coverage:
 1. Coordinate transform (world → GL, including Z negation)
-2. GeoTIFF affine inverse (world → pixel)
+2. Raster affine inverse (world → pixel)
 3. Spatial grid subsampling cell size
 4. Depth-based subsampling formula
-5. Box-filter downsample pixel mapping (full image coverage)
 6. Morton (Z-order) code interleaving
 7. Near/far plane computation from bbox corners
 8. Elevation gradient color ramp
@@ -448,22 +439,22 @@ Stats are shown in the UI: fps, points drawn per layer, tiles drawn and culled, 
 ## 16. Error Handling
 
 ### 16.1
-TIFF open failure: print error, return false, continue without orthophoto.
+An orthophoto GDAL can't read is reported; the scene loads without it.
 
 ### 16.2
 An input PDAL can't open (driver inference failure, missing or corrupt file) is reported and skipped; the viewer exits with an error only if no layer at all could be loaded.
 
 ### 16.3
-GeoTIFF tag read failure: fall back to `.tfw` sidecar lookup. If no `.tfw` either, warn and continue with unaligned orthophoto.
+An orthophoto without georeferencing is accepted: it can't color points (logged per layer) and is stretched over DEMs (§9.8). A DEM without georeferencing is rejected.
 
 ### 16.4
 Shader compile/link failure: print error log, return 0, exit.
 
 ### 16.5
-TIFF dimensions suspicious (>100k or 0): refuse to load, print error.
+A raster in another CRS that GDAL can't warp into the scene CRS is reported and skipped.
 
 ### 16.6
-Memory allocation failure (`_TIFFmalloc` returns null): print error, close TIFF, return false.
+Raster read failures (`RasterIO` errors) are reported per input; the input is skipped.
 
 ---
 

@@ -18,8 +18,7 @@
 //     boundary residual documented in dem_tess_mesh.h's header banner)
 //   - Heightmap texture bandwidth at high tessellation factors
 #include "dem_tess_mesh.h"
-#include "dem_io.h"
-#include "geotiff.h"
+#include "raster.h"
 // GLFW/OpenGL headers now come from dem_tess_mesh.h -> gl_platform.h (see
 // that file for why this used to be a fragile per-file ad-hoc block, and
 // specifically why relying on it silently broke for shaders.cpp).
@@ -27,8 +26,6 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-
-#include <tiffio.h>
 
 #include <iostream>
 #include <cmath>
@@ -78,7 +75,7 @@ static const double MAX_TEX_SPAN = 64.0;
 
 // Heightmap texture is capped at this many texels (downsampled via box
 // filter if the source DEM is larger), matching the spirit of the existing
-// orthophoto downsample cap in geotiff.cpp::loadTIFF.
+// orthophoto downsample cap in raster.cpp::loadOrthophoto.
 //
 // This cap directly limits how much real DEM detail displacement mapping
 // can ever reveal, no matter how much GPU tessellation density is dialed
@@ -134,50 +131,13 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
                         // a different DEM/ortho pairing; a stale false from
                         // a previous load must not persist
     std::cerr << "[dem-tess] opening: " << path << std::endl;
-    TIFF* tif = TIFFOpen(path.c_str(), "r");
-    if (!tif) { std::cerr << "ERROR: could not open DEM" << std::endl; return false; }
-
-    uint32_t w = 0, h = 0;
-    TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &w);
-    TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &h);
-    if (w == 0 || h == 0) { TIFFClose(tif); return false; }
-
-    Orthophoto geo;
-    geo.width = static_cast<int>(w);
-    geo.height = static_cast<int>(h);
-    readGeoTIFFTags(tif, geo);
-    if (geo.hasGeo && readEPSGCode(tif, geo.epsg)) {
-        std::cerr << "[dem-tess] DEM EPSG:" << geo.epsg << std::endl;
-    }
-    if (!geo.hasGeo) {
-        std::cerr << "ERROR: DEM has no GeoTIFF tags" << std::endl;
-        TIFFClose(tif);
-        return false;
-    }
-
-    std::vector<float> elevs;
-    uint16_t demSpp = 1;
-    if (!readDEMElevations(tif, w, h, elevs, demSpp)) {
-        TIFFClose(tif);
-        return false;
-    }
-    // Declared NODATA value (GDAL_NODATA tag) — see dem_io.h.
-    float declaredNodata = 0.0f;
-    bool hasDeclaredNodata = readDEMNodataValue(tif, declaredNodata);
-    if (!hasDeclaredNodata) {
-        std::cerr << "[dem-tess] no declared NODATA tag — using legacy < -9000 heuristic"
-                  << std::endl;
-    }
-    TIFFClose(tif);
-
-    // Nodata test used throughout: the declared value if any, else < -9000.
-    auto isNodataValue = [&](float v) -> bool {
-        if (hasDeclaredNodata) {
-            float tol = 1e-3f * std::max(1.0f, std::abs(declaredNodata));
-            return std::abs(v - declaredNodata) < tol;
-        }
-        return v < -9000.0f;
-    };
+    DemRaster dem;
+    if (!loadDEM(path, dem, frame.crsWkt)) return false;
+    const RasterGeo& geo = dem;
+    const uint32_t w = static_cast<uint32_t>(dem.width);
+    const uint32_t h = static_cast<uint32_t>(dem.height);
+    const std::vector<float>& elevs = dem.elevations;
+    auto isNodataValue = [&](float v) -> bool { return dem.isNodata(v); };
 
     float zMin = 1e30f, zMax = -1e30f;
     for (float v : elevs) {
@@ -237,28 +197,9 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
     };
 
     // UV mode: geo-matched when the ortho is georeferenced, stretch-fit
-    // over the DEM extent otherwise.
-    // `ortho` itself is a shared, externally-owned, const object — also
-    // read concurrently by other background builds (§6l) — so it can't be
-    // mutated in place for reprojection. `orthoEff` is what the rest of
-    // this function actually uses for geo-referencing math from here on;
-    // it points at `ortho` unchanged unless a CRS mismatch was found and
-    // corrected, in which case it points at `orthoReprojected` (a private
-    // copy, reprojected into the DEM's own CRS) instead.
-    Orthophoto orthoReprojected;
+    // over the DEM extent otherwise. The ortho is already in the scene CRS
+    // (raster.cpp warps it on load), as is this DEM.
     const Orthophoto* orthoEff = ortho;
-    if (ortho && ortho->hasGeo && geo.hasGeo && ortho->epsg != 0 && geo.epsg != 0
-        && ortho->epsg != geo.epsg) {
-        orthoReprojected = *ortho;
-        if (reprojectToMatchCRS(orthoReprojected, geo)) {
-            orthoEff = &orthoReprojected;
-        }
-        // If reprojection wasn't possible (no PROJ, or PROJ found no valid
-        // pipeline), orthoEff stays pointed at the original `ortho` —
-        // reprojectToMatchCRS() already logged why, and the existing
-        // overlap check below still correctly falls back to "texturing
-        // disabled" rather than silently misusing mismatched coordinates.
-    }
 
     bool orthoStretch = false;
     if (orthoEff && !orthoEff->pixels.empty()) {
@@ -277,21 +218,9 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
             double overlapMaxY = std::min(maxY, orthoMaxY);
             bool hasOverlap = (overlapMinX < overlapMaxX && overlapMinY < overlapMaxY);
             if (!hasOverlap) {
-                // Deliberately NOT orthoStretch = true here. There IS geo
-                // metadata, and it says these two rasters don't
-                // correspond — stretching the orthophoto onto the DEM
-                // anyway would show imagery from a completely unrelated
-                // location, actively misleading rather than merely
-                // imprecise. orthoStretch (the col/(w-1),row/(h-1)
-                // fallback) stays reserved for the genuinely different
-                // case of NO geo metadata at all (!orthoEff->hasGeo,
-                // above), where there's no correspondence information to
-                // contradict in the first place. Here, orthoUsable=false
-                // tells uploadGPU() to skip texturing entirely — falls
-                // back to the elevation color ramp, not a fake fit. Note
-                // this can still happen even after a successful
-                // reprojection above — same CRS now, but the two rasters
-                // genuinely don't cover the same ground.
+                // Georeferenced but not overlapping: use the elevation ramp
+                // rather than stretch unrelated imagery over the DEM
+                // (stretching is only for an ortho with no georeferencing).
                 std::cerr << "[dem-tess] WARNING: orthophoto extent does not overlap "
                              "DEM extent — texturing disabled for this DEM "
                              "(falls back to elevation color ramp), not stretched."
@@ -615,7 +544,7 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
     // COARSE cell now terminates in a handful of O(1) pyramid lookups; a
     // detailed one still recurses deeply) — OpenMP with dynamic
     // scheduling, matching the pattern already used elsewhere in this
-    // codebase (geotiff.cpp, point_cloud.cpp) rather than introducing a
+    // codebase (raster.cpp, point_cloud.cpp) rather than introducing a
     // new threading convention.
     //
     // The angular (not magnitude-based) threshold and the normal-variation
@@ -773,7 +702,7 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
         // (distinct, non-overlapping regions; all read-only against the
         // shared elevs/pyramid data) — an embarrassingly parallel outer
         // loop, same OpenMP convention already used elsewhere in this
-        // codebase (geotiff.cpp, point_cloud.cpp) rather than a new
+        // codebase (raster.cpp, point_cloud.cpp) rather than a new
         // threading approach. dynamic scheduling, not static: with early
         // termination restored, workload per cell is now highly uneven —
         // a flat cell resolves in a handful of O(1) checks, a detailed one

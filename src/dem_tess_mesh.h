@@ -31,7 +31,7 @@
 #include <thread>
 #include <vector>
 
-struct Orthophoto; // geotiff.h
+struct Orthophoto; // raster.h
 
 // True if the current GL context supports tessellation shaders (GL >= 4.0).
 // Call after glfwMakeContextCurrent().

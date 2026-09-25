@@ -1,5 +1,5 @@
 // viewer_ui.cpp — ImGui panels: layers, view settings, log, help.
-#include "geotiff.h"
+#include "raster.h"
 #include "log_capture.h"
 #include "viewer_app.h"
 

@@ -141,39 +141,6 @@ TEST(test_depth_subsampling) {
 }
 
 // ---------------------------------------------------------------------------
-// Box-filter downsample pixel mapping:
-// sx0 = floor(x * srcW / dstW)
-// sx1 = floor((x+1) * srcW / dstW)
-// Must cover the full source image [0, srcW) with no gaps.
-// ---------------------------------------------------------------------------
-TEST(test_downsample_mapping) {
-    int srcW = 20000, dstW = 14744;
-
-    // First dst pixel maps to src [0, 1)
-    int sx0 = static_cast<int>(static_cast<int64_t>(0) * srcW / dstW);
-    int sx1 = static_cast<int>(static_cast<int64_t>(1) * srcW / dstW);
-    assert(sx0 == 0);
-    assert(sx1 >= 1);
-
-    // Last dst pixel must map to the end of the source image.
-    int lastSx0 = static_cast<int>(static_cast<int64_t>(dstW - 1) * srcW / dstW);
-    int lastSx1 = static_cast<int>(static_cast<int64_t>(dstW) * srcW / dstW);
-    assert(lastSx1 == srcW);  // covers the full extent
-    assert(lastSx0 < srcW);
-
-    // No gaps: every src pixel is covered by exactly one dst pixel's range.
-    // (Spot-check a few.)
-    int prevEnd = 0;
-    for (int x = 0; x < dstW; x += dstW / 10) {
-        int a = static_cast<int>(static_cast<int64_t>(x) * srcW / dstW);
-        int b = static_cast<int>(static_cast<int64_t>(x + 1) * srcW / dstW);
-        if (b <= a) b = a + 1;
-        assert(a >= prevEnd - 1);  // no gap (off-by-one from int truncation is OK)
-        prevEnd = b;
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Morton (Z-order) code: interleave bits of X and Y
 // morton(0,0)=0, morton(1,0)=1, morton(0,1)=2, morton(1,1)=3
 // Used for spatially-uniform point ordering within LOD cells.
@@ -664,48 +631,6 @@ TEST(test_master_edge_distance) {
     assert(edgeDistCPU(0.1f, 0.5f) < edgeDistCPU(0.3f, 0.5f));
 }
 
-// Mirrors the unified isNodataValue() check now used in both dem_mesh.cpp
-// and dem_tess_mesh.cpp: exact(-ish) match against the DEM's own declared
-// GDAL_NODATA value when present, falling back to the legacy "< -9000"
-// heuristic only when no such tag exists. Real bug this fixes: a DEM
-// declaring a different sentinel (0, a large-magnitude negative float,
-// etc.) previously had those pixels silently treated as valid elevation,
-// generating real geometry where there should have been none — reported
-// as "displays geometry where there's only orthophoto."
-static bool isNodataValueCPU(float v, bool hasDeclared, float declared) {
-    if (hasDeclared) {
-        float tol = 1e-3f * std::max(1.0f, std::abs(declared));
-        return std::abs(v - declared) < tol;
-    }
-    return v < -9000.0f;
-}
-
-TEST(test_nodata_declared_value) {
-    // A DEM declaring 0.0 as its nodata sentinel — the exact case the old
-    // hardcoded "< -9000" check would have missed entirely (0 is not
-    // less than -9000, so it would have been treated as valid sea-level
-    // elevation).
-    assert(isNodataValueCPU(0.0f, true, 0.0f) == true);
-    assert(isNodataValueCPU(0.0f, false, 0.0f) == false); // old heuristic: misses it
-
-    // A DEM declaring a large-magnitude negative sentinel (a common real
-    // convention, e.g. -3.4028235e+38) — still correctly detected via the
-    // declared-value path, and via the legacy heuristic too (since it's
-    // also < -9000), so both paths agree here.
-    float bigNeg = -3.4028235e+38f;
-    assert(isNodataValueCPU(bigNeg, true, bigNeg) == true);
-    assert(isNodataValueCPU(bigNeg, false, 0.0f) == true);
-
-    // A real elevation value must never be misclassified as nodata,
-    // regardless of which path is active.
-    assert(isNodataValueCPU(1500.0f, true, 0.0f) == false);
-    assert(isNodataValueCPU(1500.0f, false, 0.0f) == false);
-
-    // Legacy fallback (no declared tag) still catches the common -9999
-    // convention, unchanged from before this fix.
-    assert(isNodataValueCPU(-9999.0f, false, 0.0f) == true);
-}
-
 // Mirrors the min/max elevation pyramid build+query in dem_tess_mesh.cpp
 // and dem_mesh.cpp (kept in sync between the two) — the mechanism that
 // makes top-down quadtree subdivision exact again, replacing bottom-up
@@ -838,64 +763,6 @@ TEST(test_minmax_pyramid_nodata_handling) {
         auto p = buildPyramidCPU(elevs, w, h, nodata);
         auto [mn, mx] = queryPyramidCPU(p, 0, 0, 4, 4);
         assert(mn == 42.0f && mx == 42.0f);
-    }
-}
-
-// Mirrors the axis-aligned affine refit in geotiff.cpp's
-// reprojectToMatchCRS() — given 4 already-reprojected corner coordinates
-// (dstX/dstY, in the DEM's CRS), re-derive a still axis-aligned (no
-// rotation/shear, matching this codebase's existing affine model) A/E/C/F
-// transform. Averages both edges for each axis (top+bottom for
-// horizontal scale, left+right for vertical) so a small asymmetric
-// distortion from the real (possibly non-linear) reprojection is split
-// evenly rather than biased toward one edge.
-static void fitAffineCPU(const double dstX[4], const double dstY[4],
-                         int width, int height,
-                         double& outA, double& outE, double& outC, double& outF) {
-    // Corner order matches reprojectToMatchCRS(): 0=top-left, 1=top-right,
-    // 2=bottom-left, 3=bottom-right.
-    outA = ((dstX[1] - dstX[0]) + (dstX[3] - dstX[2])) / (2.0 * width);
-    outE = ((dstY[2] - dstY[0]) + (dstY[3] - dstY[1])) / (2.0 * height);
-    outC = (dstX[0] + dstX[2]) / 2.0;
-    outF = (dstY[0] + dstY[1]) / 2.0;
-}
-
-TEST(test_crs_reproject_affine_refit) {
-    // Case 1: a pure translation (as if reprojecting between two CRSs
-    // that only differ by a coordinate-origin shift) — the refit should
-    // recover the exact same A/E as the original untranslated grid, with
-    // C/F reflecting the shift.
-    {
-        // Original 100x50 image, "reprojected" corners are a simple grid
-        // offset by (+1000, +2000), scale unchanged (A=2.0, E=-1.5).
-        int width = 100, height = 50;
-        double A = 2.0, E = -1.5, C = 1000.0, F = 2000.0;
-        double dstX[4] = { C, C + A*width, C, C + A*width };
-        double dstY[4] = { F, F, F + E*height, F + E*height };
-        double outA, outE, outC, outF;
-        fitAffineCPU(dstX, dstY, width, height, outA, outE, outC, outF);
-        assert(std::abs(outA - A) < 1e-9);
-        assert(std::abs(outE - E) < 1e-9);
-        assert(std::abs(outC - C) < 1e-9);
-        assert(std::abs(outF - F) < 1e-9);
-    }
-
-    // Case 2: a slightly asymmetric distortion (simulating a real,
-    // mildly non-linear reprojection) — top edge maps to a slightly
-    // different width than the bottom edge. The refit should average
-    // them, landing strictly between the two, not just pick one.
-    {
-        int width = 10, height = 10;
-        // Top edge spans 20 units, bottom edge spans 22 units (asymmetry).
-        double dstX[4] = { 0.0, 20.0, 0.0, 22.0 };
-        double dstY[4] = { 0.0, 0.0, -10.0, -10.0 };
-        double outA, outE, outC, outF;
-        fitAffineCPU(dstX, dstY, width, height, outA, outE, outC, outF);
-        double topScale = 20.0 / width;    // 2.0
-        double bottomScale = 22.0 / width; // 2.2
-        assert(outA > std::min(topScale, bottomScale) - 1e-9);
-        assert(outA < std::max(topScale, bottomScale) + 1e-9);
-        assert(std::abs(outA - 2.1) < 1e-9); // exact average of 2.0 and 2.2
     }
 }
 

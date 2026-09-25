@@ -1,6 +1,6 @@
 // copc_layer.cpp — see copc_layer.h.
 #include "copc_layer.h"
-#include "geotiff.h"
+#include "raster.h"
 
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui.h>

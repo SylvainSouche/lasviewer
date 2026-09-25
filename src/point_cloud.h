@@ -30,6 +30,7 @@ struct CloudHeader {
     WorldBounds bounds;   // hasZ = true
     uint64_t pointCount = 0;
     int epsg = 0;         // horizontal CRS, 0 = unknown
+    std::string wkt;      // full CRS, empty = unknown
 };
 // Header-only read (no points loaded, except as a fallback for bounds).
 bool readCloudHeader(const std::string& path, CloudHeader& out);

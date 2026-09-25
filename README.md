@@ -1,6 +1,6 @@
 # lasviewer
 
-A lightweight C++ viewer for **LAZ/LAS/COPC point clouds** and **GeoTIFF DEMs**, with orthophoto draping. Built on GLFW + OpenGL, PDAL for point cloud I/O, libtiff for rasters and Dear ImGui for the interface.
+A lightweight C++ viewer for **LAZ/LAS/COPC point clouds** and **GeoTIFF DEMs**, with orthophoto draping. Built on GLFW + OpenGL, PDAL for point cloud I/O, GDAL for rasters and Dear ImGui for the interface.
 
 ![lasviewer](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue)
 ![language](https://img.shields.io/badge/language-C%2B%2B17-orange)
@@ -15,10 +15,10 @@ A lightweight C++ viewer for **LAZ/LAS/COPC point clouds** and **GeoTIFF DEMs**,
 - **LAZ/LAS**: loaded in full through PDAL, thinned on an XY grid to at most 2M points.
 - **COPC streaming**: each file is split into 8×8 tiles, loaded asynchronously, and refined based on how large each tile appears on screen (per-tile PCA/OBB). Tiles outside the view or behind closer geometry are skipped; occlusion comes from a scene-wide Hi-Z depth pyramid.
 - **Orthophoto coloring**: points sample a GeoTIFF orthophoto, which must cover at least 25% of the cloud and use the same CRS. The colors can be switched between the orthophoto and elevation (or the file's RGB) at any time.
-- **DEM/DSM terrain**: an adaptive quadtree of GPU-tessellated patches with height displacement, textured by the orthophoto. A CRS mismatch is reprojected with PROJ. Supports Float/Int rasters and IGN Terrain-RGB.
+- **DEM/DSM terrain**: an adaptive quadtree of GPU-tessellated patches with height displacement, textured by the orthophoto. Supports any raster GDAL reads (Float/Int elevation, IGN Terrain-RGB), with its declared nodata value.
 - **GPU depth subsampling**: gives an even screen-space point density.
 - **Navigation**: orbit, look-around, pan, fly, and double-click to focus. Perspective and orthographic projections, Z exaggeration.
-- **CRS awareness**: each input's EPSG code is read and shown; mismatched inputs are reported.
+- **One CRS per scene**: taken from the first input that declares one (point clouds first). Orthophotos and DEMs in another CRS are warped into it on load (GDAL, bilinear). Point clouds aren't reprojected; one in another CRS is reported.
 
 ---
 
@@ -28,23 +28,20 @@ A lightweight C++ viewer for **LAZ/LAS/COPC point clouds** and **GeoTIFF DEMs**,
 
 **macOS (MacPorts):**
 ```bash
-sudo port install glfw pdal tiff glm pkgconfig
-# Optional, for automatic DEM/orthophoto CRS reprojection (usually already
-# installed as a GDAL dependency):
-sudo port install proj9
+sudo port install glfw pdal gdal glm pkgconfig
 ```
 
 **macOS (Homebrew):**
 ```bash
-brew install glfw pdal libtiff glm pkg-config proj
+brew install glfw pdal gdal glm pkg-config
 ```
 
 **Linux (Debian/Ubuntu):**
 ```bash
-sudo apt install libglfw3-dev libpdal-dev libtiff-dev libglm-dev pkg-config libproj-dev
+sudo apt install libglfw3-dev libpdal-dev libgdal-dev libglm-dev pkg-config
 ```
 
-Dear ImGui is vendored in `third_party/imgui` (v1.91.9b, MIT), so there's nothing to install for it.
+GDAL is also a PDAL dependency, so it's normally installed already. Dear ImGui is vendored in `third_party/imgui` (v1.91.9b, MIT), so there's nothing to install for it.
 
 ### Build
 
@@ -123,7 +120,7 @@ pdal translate cloud.copc.laz dsm.tif --readers.copc.resolution=0.5 \
 ```bash
 make            # build (default)
 make debug      # -g build → lasviewer-debug
-make test       # unit tests (test_basic: formulas; test_scene: frame + camera code)
+make test       # unit tests (test_basic: formulas; test_scene: frame + camera; test_raster: GDAL raster I/O)
 make lint       # clang-tidy / cppcheck
 make fmt        # clang-format
 make dist       # source tarball
@@ -153,18 +150,17 @@ src/
   copc_streamer.*        TileGrid: loader thread, tile LOD, upload, draw
   dem_layer.*            DEM layer (wraps DEMTessMesh)
   dem_tess_mesh.*        adaptive quadtree + GPU tessellation, background rebuilds
-  dem_io.*               raw DEM raster reading
   hiz.*                  scene-wide Hi-Z occlusion pyramid, frustum test
   point_cloud.*          PDAL loading, header reading
-  geotiff.*              GeoTIFF tags, .tfw, orthophoto loading, CRS, PROJ
+  raster.*               GDAL raster I/O: orthophotos, DEMs, CRS, warping
   shaders.*              embedded GLSL + compile/link helpers
   log_capture.*          std::cerr → in-app log (thread-safe)
 third_party/imgui/       Dear ImGui core + GLFW/OpenGL3 backends
-tests/                   test_basic.cpp, test_scene.cpp
+tests/                   test_basic.cpp, test_scene.cpp, test_raster.cpp
 docs/                    design notes (DEM tessellation), Doxyfile
 ```
 
-**Loading.** The scene first reads every input's header extent (PDAL metadata, GeoTIFF tags) and fixes one `SceneFrame` from their union:
+**Loading.** The scene first reads every input's header (PDAL metadata; GDAL for rasters), picks the scene CRS, expresses every extent in it, and fixes one `SceneFrame` from their union:
 
 ```
 GL_X =  (worldX - center.x) / scale     easting
@@ -172,7 +168,7 @@ GL_Y =  (worldZ - center.z) / scale     elevation (up)
 GL_Z = -(worldY - center.y) / scale     northing, negated for north-up
 ```
 
-It then loads the orthophoto once and creates one layer per input.
+It then loads the orthophoto once (warped into the scene CRS if needed) and creates one layer per input; DEMs are warped the same way when they load.
 
 **Each frame.** Near/far planes are computed from the union of the visible layers. Then:
 1. Every layer gets `update()`, which drains background work.
@@ -188,10 +184,10 @@ Adding a new data type means writing one `Layer` subclass.
 
 ## Limitations
 
-- One orthophoto per scene. Rasters are read with libtiff, and the orthophoto is downsampled to ≤64 Mpx; COG overviews aren't used. GDAL-based raster I/O is the planned fix.
+- One orthophoto per scene, downsampled to ≤64 Mpx on load (GDAL averaging, using the file's overviews when it has them). It isn't streamed at higher resolution when zooming in.
 - COPC streaming uses a fixed 8×8 grid of PDAL `bounds` + `resolution` queries rather than the COPC octree, with one loader thread and no memory budget.
 - Point attributes other than XYZ/RGB (classification, intensity, returns) aren't used yet.
-- A DEM's declared nodata value isn't read (a libtiff tag crash; see `dem_io.cpp`); values below −9000 are treated as nodata.
+- Point clouds are not reprojected: a cloud in another CRS than the scene's is reported and will be misplaced.
 - DEM display needs an OpenGL 4.0+ context (macOS provides 4.1). On a 3.3-only context, DEMs are skipped and point clouds still work.
 - No measurements or exports beyond `--snapshot`.
 

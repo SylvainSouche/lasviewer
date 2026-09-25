@@ -1,6 +1,6 @@
 // point_cloud_layer.cpp — see point_cloud_layer.h.
 #include "point_cloud_layer.h"
-#include "geotiff.h"
+#include "raster.h"
 
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui.h>

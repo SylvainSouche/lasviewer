@@ -5,7 +5,7 @@
 // drains results in update(), uploads them, and requests refinements based
 // on each tile's projected on-screen size.
 #include "copc_streamer.h"
-#include "geotiff.h"
+#include "raster.h"
 #include "hiz.h"
 #include "layer.h"
 
