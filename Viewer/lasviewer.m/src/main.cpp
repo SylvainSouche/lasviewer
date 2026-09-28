@@ -6,6 +6,7 @@
 #include "viewer_app.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -23,13 +24,22 @@ void printUsage(const char* prog) {
         << "Options:\n"
         << "  -o <ortho.tif>     orthophoto used to color points and texture DEMs\n"
         << "  -d <dem.tif>       add a DEM explicitly (needed for 8-bit Terrain-RGB DEMs)\n"
+        << "  -dtm, -mnt <f.tif> same as -d: a terrain model, ground of -dhm / -dsm\n"
+        << "  -dhm, -mnh <f.tif> height model (height above ground): what stands on the\n"
+        << "                     DTM it overlaps, drawn semi-transparent above a height\n"
+        << "                     threshold; the DTM is left without orthophoto under it\n"
+        << "  -dsm, -mns <f.tif> surface model, used like -dhm (height = DSM - DTM)\n"
         << "  -cop <cloud.laz>   add a point cloud explicitly\n"
         << "  --snapshot <f.ppm> save a frame once loading has settled, then quit\n"
+        << "  --view x,y,z,d,yaw,pitch\n"
+        << "                     start looking at world point x,y,z (scene CRS) from d\n"
+        << "                     meters away; yaw and pitch in degrees\n"
         << "  -h, --help         this help\n\n"
         << "Examples:\n"
         << "  " << prog << " cloud.copc.laz ortho.tif\n"
         << "  " << prog << " tile1.copc.laz tile2.copc.laz -o ortho.tif\n"
-        << "  " << prog << " dem.tif cloud.laz -o ortho.tif\n\n"
+        << "  " << prog << " dem.tif cloud.laz -o ortho.tif\n"
+        << "  " << prog << " -mnt mnt.tif -mnh mnh.tif -o ortho.tif\n\n"
         << "Press H in the viewer for the controls.\n";
 }
 
@@ -42,7 +52,12 @@ std::string lowerExt(const std::string& path) {
 }
 
 // Returns false (after printing why) on invalid arguments.
-bool parseArgs(int argc, char** argv, LoadPlan& plan, std::string& snapshot) {
+struct InitialView {
+    bool set = false;
+    double v[6] = {};
+};
+
+bool parseArgs(int argc, char** argv, LoadPlan& plan, std::string& snapshot, InitialView& view) {
     std::vector<std::string> images; // positional TIFFs that look like imagery
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -60,14 +75,30 @@ bool parseArgs(int argc, char** argv, LoadPlan& plan, std::string& snapshot) {
             const char* v = needValue();
             if (!v) return false;
             plan.ortho = v;
-        } else if (arg == "-d") {
+        } else if (arg == "-d" || arg == "-dtm" || arg == "-mnt") {
             const char* v = needValue();
             if (!v) return false;
             plan.dems.push_back(v);
+        } else if (arg == "-dhm" || arg == "-mnh" || arg == "-dsm" || arg == "-mns") {
+            const char* v = needValue();
+            if (!v) return false;
+            bool height = (arg == "-dhm" || arg == "-mnh");
+            plan.aboveGround.push_back(
+                {v, height ? AboveGroundKind::Height : AboveGroundKind::Surface});
         } else if (arg == "-cop") {
             const char* v = needValue();
             if (!v) return false;
             plan.clouds.push_back(v);
+        } else if (arg == "--view") {
+            const char* v = needValue();
+            if (!v) return false;
+            double* o = view.v;
+            if (std::sscanf(v, "%lf,%lf,%lf,%lf,%lf,%lf", &o[0], &o[1], &o[2], &o[3], &o[4],
+                            &o[5]) != 6) {
+                std::cerr << "ERROR: --view needs x,y,z,distance,yaw,pitch\n";
+                return false;
+            }
+            view.set = true;
         } else if (arg == "--snapshot") {
             const char* v = needValue();
             if (!v) return false;
@@ -100,6 +131,10 @@ bool parseArgs(int argc, char** argv, LoadPlan& plan, std::string& snapshot) {
         std::cerr << "ERROR: no point cloud or DEM given\n";
         return false;
     }
+    if (!plan.aboveGround.empty() && plan.dems.empty()) {
+        std::cerr << "ERROR: -dhm / -dsm need a terrain model (-dtm) to stand on\n";
+        return false;
+    }
     return true;
 }
 
@@ -108,7 +143,8 @@ bool parseArgs(int argc, char** argv, LoadPlan& plan, std::string& snapshot) {
 int main(int argc, char** argv) {
     LoadPlan plan;
     std::string snapshot;
-    if (!parseArgs(argc, argv, plan, snapshot)) {
+    InitialView view;
+    if (!parseArgs(argc, argv, plan, snapshot, view)) {
         std::cerr << "Run " << argv[0] << " -h for help.\n";
         return 1;
     }
@@ -117,6 +153,9 @@ int main(int argc, char** argv) {
     LogCapture logCapture; // mirrors std::cerr into the in-app log window
     ViewerApp app;
     app.setSnapshotPath(snapshot);
+    if (view.set)
+        app.setInitialView(glm::dvec3(view.v[0], view.v[1], view.v[2]), view.v[3], view.v[4],
+                           view.v[5]);
     if (!app.init(plan)) return 1;
     app.run();
     return 0;

@@ -120,7 +120,7 @@ bool demTessSupported() {
 // build thread). Reads the DEM, builds the adaptive patch set, and keeps the
 // full-resolution heightmap (in GL-space Y) for uploadGPU() to texture.
 // ---------------------------------------------------------------------------
-bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
+bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
                               const SceneFrame& frame_, double angleThresholdDeg,
                               int maxLevelParam,
                               const std::atomic<bool>* cancelFlag) {
@@ -130,9 +130,14 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
     orthoUsable = true; // reset each load — this object can be reloaded with
                         // a different DEM/ortho pairing; a stale false from
                         // a previous load must not persist
-    std::cerr << "[dem-tess] opening: " << path << std::endl;
-    DemRaster dem;
-    if (!loadDEM(path, dem, frame.crsWkt)) return false;
+    DemSourceData data;
+    if (!source(data)) return false;
+    const DemRaster& dem = data.dem;
+    if (!data.aux.empty() &&
+        data.aux.size() != static_cast<size_t>(dem.width) * static_cast<size_t>(dem.height)) {
+        std::cerr << "ERROR: DEM auxiliary raster does not match the DEM grid" << std::endl;
+        return false;
+    }
     const RasterGeo& geo = dem;
     const uint32_t w = static_cast<uint32_t>(dem.width);
     const uint32_t h = static_cast<uint32_t>(dem.height);
@@ -895,6 +900,7 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
         if (isNodataValue(e)) e = 0.0f;
         heightmapGLSpace[i] = static_cast<float>((e - worldCenter.z) * invScale);
     }
+    auxData = std::move(data.aux);
 
     // GL-space bbox from patch corners (displacement can locally exceed it;
     // good enough for near/far and framing).
@@ -915,6 +921,47 @@ bool DEMTessMesh::loadFromDEM(const std::string& path, const Orthophoto* ortho,
               << patchPositions.size() / 3 << " corner vertices, unshared)"
               << std::endl;
     return true;
+}
+
+// Box filter (fractional mapping — NOT naive integer stride, see specs.md
+// §6.3 for why that matters) of a w x h float grid down to at most
+// capTexels. Returns an empty vector when no downsampling is needed;
+// otherwise updates w and h to the new size.
+static std::vector<float> boxDownsample(const std::vector<float>& src, int& w, int& h,
+                                        int capTexels) {
+    const int srcW = w, srcH = h;
+    if (static_cast<int64_t>(srcW) * srcH <= capTexels) return {};
+    float scale = std::sqrt(static_cast<float>(capTexels) /
+                            (static_cast<float>(srcW) * srcH));
+    int dstW = std::max(1, static_cast<int>(srcW * scale));
+    int dstH = std::max(1, static_cast<int>(srcH * scale));
+    std::vector<float> out(static_cast<size_t>(dstW) * dstH);
+    for (int dy = 0; dy < dstH; ++dy) {
+        double sy0 = (static_cast<double>(dy) / dstH) * srcH;
+        double sy1 = (static_cast<double>(dy + 1) / dstH) * srcH;
+        int iy0 = std::max(0, static_cast<int>(sy0));
+        int iy1 = std::min(srcH - 1, static_cast<int>(std::ceil(sy1)) - 1);
+        if (iy1 < iy0) iy1 = iy0;
+        for (int dx = 0; dx < dstW; ++dx) {
+            double sx0 = (static_cast<double>(dx) / dstW) * srcW;
+            double sx1 = (static_cast<double>(dx + 1) / dstW) * srcW;
+            int ix0 = std::max(0, static_cast<int>(sx0));
+            int ix1 = std::min(srcW - 1, static_cast<int>(std::ceil(sx1)) - 1);
+            if (ix1 < ix0) ix1 = ix0;
+            double sum = 0.0; int count = 0;
+            for (int sy = iy0; sy <= iy1; ++sy) {
+                for (int sx = ix0; sx <= ix1; ++sx) {
+                    sum += src[static_cast<size_t>(sy) * srcW + sx];
+                    ++count;
+                }
+            }
+            out[static_cast<size_t>(dy) * dstW + dx] =
+                static_cast<float>(count > 0 ? sum / count : 0.0);
+        }
+    }
+    w = dstW;
+    h = dstH;
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -977,9 +1024,25 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
         return false;
     }
 
+    if (auxTex) { glDeleteTextures(1, &auxTex); auxTex = 0; }
+    if (!auxData.empty()) {
+        int aw = heightmapSrcW, ah = heightmapSrcH;
+        std::vector<float> small = boxDownsample(auxData, aw, ah, MAX_HEIGHTMAP_TEXELS);
+        glGenTextures(1, &auxTex);
+        glBindTexture(GL_TEXTURE_2D, auxTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, aw, ah, 0, GL_RED, GL_FLOAT,
+                     small.empty() ? auxData.data() : small.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
     // Not needed on the CPU after upload; rebuilds re-read the file.
     heightmapGLSpace.clear();
     heightmapGLSpace.shrink_to_fit();
+    auxData.clear();
+    auxData.shrink_to_fit();
 
     // --- Color texture (orthophoto), uploaded once and kept across
     // rebuilds. Skipped when the ortho's georeferencing says it doesn't
@@ -1019,40 +1082,10 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
 // ---------------------------------------------------------------------------
 bool DEMTessMesh::uploadHeightmapTexture(const std::vector<float>& glSpaceData,
                                          int srcW, int srcH, int capTexels) {
-    const std::vector<float>* srcData = &glSpaceData;
-    std::vector<float> downsampled;
     int dW = srcW, dH = srcH;
-    if (static_cast<int64_t>(srcW) * srcH > capTexels) {
-        float scale = std::sqrt(static_cast<float>(capTexels) /
-                                (static_cast<float>(srcW) * srcH));
-        int dstW = std::max(1, static_cast<int>(srcW * scale));
-        int dstH = std::max(1, static_cast<int>(srcH * scale));
-        downsampled.resize(static_cast<size_t>(dstW) * dstH);
-        for (int dy = 0; dy < dstH; ++dy) {
-            double sy0 = (static_cast<double>(dy) / dstH) * srcH;
-            double sy1 = (static_cast<double>(dy + 1) / dstH) * srcH;
-            int iy0 = std::max(0, static_cast<int>(sy0));
-            int iy1 = std::min(srcH - 1, static_cast<int>(std::ceil(sy1)) - 1);
-            if (iy1 < iy0) iy1 = iy0;
-            for (int dx = 0; dx < dstW; ++dx) {
-                double sx0 = (static_cast<double>(dx) / dstW) * srcW;
-                double sx1 = (static_cast<double>(dx + 1) / dstW) * srcW;
-                int ix0 = std::max(0, static_cast<int>(sx0));
-                int ix1 = std::min(srcW - 1, static_cast<int>(std::ceil(sx1)) - 1);
-                if (ix1 < ix0) ix1 = ix0;
-                double sum = 0.0; int count = 0;
-                for (int sy = iy0; sy <= iy1; ++sy) {
-                    for (int sx = ix0; sx <= ix1; ++sx) {
-                        sum += glSpaceData[static_cast<size_t>(sy) * srcW + sx];
-                        ++count;
-                    }
-                }
-                downsampled[static_cast<size_t>(dy) * dstW + dx] =
-                    static_cast<float>(count > 0 ? sum / count : 0.0);
-            }
-        }
-        srcData = &downsampled;
-        dW = dstW; dH = dstH;
+    std::vector<float> downsampled = boxDownsample(glSpaceData, dW, dH, capTexels);
+    const std::vector<float>* srcData = downsampled.empty() ? &glSpaceData : &downsampled;
+    if (!downsampled.empty()) {
         std::cerr << "[dem-tess] heightmap downsampled: " << srcW << "x" << srcH
                   << " -> " << dW << "x" << dH << std::endl;
     }
@@ -1087,7 +1120,8 @@ bool DEMTessMesh::uploadHeightmapTexture(const std::vector<float>& glSpaceData,
 void DEMTessMesh::render(GLuint tessProgram, const glm::mat4& V, const glm::mat4& P,
                          const glm::vec3& camPosGL, float fov, float viewportH,
                          float zScale, float targetPixelsPerSegment,
-                         bool useDisplacement, bool showMasterEdges) const {
+                         bool useDisplacement, bool showMasterEdges,
+                         const DemStyle& style) const {
     if (!valid || tessProgram == 0) return;
 
     glUseProgram(tessProgram);
@@ -1127,6 +1161,21 @@ void DEMTessMesh::render(GLuint tessProgram, const glm::mat4& V, const glm::mat4
         glUniform1i(glGetUniformLocation(tessProgram, "uHasTexture"), 0);
     }
 
+    glUniform1f(glGetUniformLocation(tessProgram, "uOpacity"), style.opacity);
+    int auxMode = auxTex ? static_cast<int>(style.auxMode) : 0;
+    glUniform1i(glGetUniformLocation(tessProgram, "uAuxMode"), auxMode);
+    if (auxMode != 0) {
+        glUniform1i(glGetUniformLocation(tessProgram, "uAux"), 2);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, auxTex);
+        glUniform1f(glGetUniformLocation(tessProgram, "uThreshold"), style.threshold);
+        glUniform1f(glGetUniformLocation(tessProgram, "uFrameScale"),
+                    static_cast<float>(frame.scale));
+        glUniform1f(glGetUniformLocation(tessProgram, "uFrameCenterZ"),
+                    static_cast<float>(frame.center.z));
+    }
+    glActiveTexture(GL_TEXTURE0);
+
     glPatchParameteri(GL_PATCH_VERTICES, 4);
     glBindVertexArray(vao);
     glDrawArrays(GL_PATCHES, 0, patchCount * 4);
@@ -1135,6 +1184,8 @@ void DEMTessMesh::render(GLuint tessProgram, const glm::mat4& V, const glm::mat4
 
 void DEMTessMesh::releaseGeometryGL() {
     if (heightmapTex) glDeleteTextures(1, &heightmapTex);
+    if (auxTex) glDeleteTextures(1, &auxTex);
+    auxTex = 0;
     if (vao) glDeleteVertexArrays(1, &vao);
     if (posVBO) glDeleteBuffers(1, &posVBO);
     if (uvVBO) glDeleteBuffers(1, &uvVBO);
@@ -1162,7 +1213,7 @@ DEMTessMesh::~DEMTessMesh() {
     if (bgThread.joinable()) bgThread.join();
 }
 
-void DEMTessMesh::requestBackgroundBuild(const std::string& path, const Orthophoto* ortho,
+void DEMTessMesh::requestBackgroundBuild(const DemSource& source, const Orthophoto* ortho,
                                          const SceneFrame& frame_, double angleThresholdDeg,
                                          int maxLevelParam) {
     if (bgInProgress.load()) {
@@ -1187,17 +1238,17 @@ void DEMTessMesh::requestBackgroundBuild(const std::string& path, const Orthopho
         // time" for no benefit, since the old one is aborting quickly
         // anyway.
         bgHasPendingRequest = true;
-        bgPendingPath = path;
+        bgPendingSource = source;
         bgPendingOrtho = ortho;
         bgPendingFrame = frame_;
         bgPendingAngle = angleThresholdDeg;
         bgPendingMaxLevel = maxLevelParam;
         return;
     }
-    startBackgroundBuildNow(path, ortho, frame_, angleThresholdDeg, maxLevelParam);
+    startBackgroundBuildNow(source, ortho, frame_, angleThresholdDeg, maxLevelParam);
 }
 
-void DEMTessMesh::startBackgroundBuildNow(const std::string& path, const Orthophoto* ortho,
+void DEMTessMesh::startBackgroundBuildNow(const DemSource& source, const Orthophoto* ortho,
                                           const SceneFrame& frame_, double angleThresholdDeg,
                                           int maxLevelParam) {
     // The only thread that could possibly be joinable here has already
@@ -1218,13 +1269,13 @@ void DEMTessMesh::startBackgroundBuildNow(const std::string& path, const Orthoph
     std::cerr << "[dem-tess] background rebuild START (angle="
               << angleThresholdDeg << "\u00b0, maxLevel=" << maxLevelParam
               << ")" << std::endl;
-    bgThread = std::thread([this, path, ortho, frame_, angleThresholdDeg, maxLevelParam, cancelFlag]() {
+    bgThread = std::thread([this, source, ortho, frame_, angleThresholdDeg, maxLevelParam, cancelFlag]() {
         // Builds an entirely separate, temporary instance — reuses
         // loadFromDEM() completely unchanged. This touches no GL state and
         // no member of `this`, so it's safe to run concurrently with the
         // main thread rendering `this`'s CURRENT (old) data.
         auto tmp = std::make_unique<DEMTessMesh>();
-        bool ok = tmp->loadFromDEM(path, ortho, frame_, angleThresholdDeg, maxLevelParam,
+        bool ok = tmp->loadFromDEM(source, ortho, frame_, angleThresholdDeg, maxLevelParam,
                                    cancelFlag.get());
         bool wasCancelled = cancelFlag->load(std::memory_order_relaxed);
         if (wasCancelled) {
@@ -1266,6 +1317,7 @@ bool DEMTessMesh::pollBackgroundBuild(const Orthophoto* ortho) {
             patchEdgeConstraint = std::move(pending->patchEdgeConstraint);
             patchCount = pending->patchCount;
             heightmapGLSpace = std::move(pending->heightmapGLSpace);
+            auxData = std::move(pending->auxData);
             heightmapSrcW = pending->heightmapSrcW;
             heightmapSrcH = pending->heightmapSrcH;
             frame = pending->frame;
@@ -1288,7 +1340,7 @@ bool DEMTessMesh::pollBackgroundBuild(const Orthophoto* ortho) {
     // inside the background thread, right before it exited).
     if (!bgInProgress.load() && bgHasPendingRequest) {
         bgHasPendingRequest = false;
-        startBackgroundBuildNow(bgPendingPath, bgPendingOrtho, bgPendingFrame, bgPendingAngle,
+        startBackgroundBuildNow(bgPendingSource, bgPendingOrtho, bgPendingFrame, bgPendingAngle,
                                 bgPendingMaxLevel);
     }
     return swapped;

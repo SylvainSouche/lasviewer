@@ -19,6 +19,7 @@ struct ViewSettings {
     float pointDensityMul = 1.0f; // screen-space point density (points layers)
     bool useOcclusion = true;     // Hi-Z culling of streamed tiles
     bool showTileBoxes = false;
+    float heightThreshold = 0.5f; // m: above-ground surfaces are cut below it
 };
 
 // Linked programs shared by all layers (0 when unavailable).
@@ -73,6 +74,9 @@ public:
     virtual void render(const RenderContext&) = 0;
     // Debug overlays drawn after all layers (e.g. tile boxes).
     virtual void renderOverlay(const RenderContext&) {}
+    // Drawn after all opaque layers, and left out of the Hi-Z pyramid (a
+    // see-through surface must not hide the tiles behind it).
+    virtual bool transparent() const { return false; }
     // Whether this layer consults the Hi-Z pyramid (so the viewer builds it).
     virtual bool wantsHiZ() const { return false; }
     // ImGui widgets for this layer's settings.

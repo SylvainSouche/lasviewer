@@ -2,5 +2,5 @@ LIB=geo
 LIB_SHARED=NO
 OPENMP=yes
 LIBS=copc-lib lazperf gdal
-TESTS_CXX=raster_test las_test
+TESTS_CXX=raster_test las_test height_model_test
 .include "mk.lib.mk"

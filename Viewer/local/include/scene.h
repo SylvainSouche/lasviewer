@@ -1,5 +1,6 @@
 // scene.h — the set of layers on screen, their shared frame and orthophoto.
 #pragma once
+#include "height_model.h"
 #include "layer.h"
 #include "scene_frame.h"
 #include <functional>
@@ -12,6 +13,13 @@ struct Orthophoto;
 struct LoadPlan {
     std::vector<std::string> clouds; // .las / .laz / .copc.laz
     std::vector<std::string> dems;   // GeoTIFF elevation rasters
+    // Rasters of what stands on the ground (DHM or DSM). Each one is paired
+    // with the DEM of `dems` it overlaps most, which becomes its ground.
+    struct AboveGround {
+        std::string path;
+        AboveGroundKind kind;
+    };
+    std::vector<AboveGround> aboveGround;
     std::string ortho;               // optional GeoTIFF orthophoto
 };
 

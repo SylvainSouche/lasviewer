@@ -16,6 +16,7 @@ A lightweight C++ viewer for **LAZ/LAS/COPC point clouds** and **GeoTIFF DEMs**,
 - **COPC streaming**: each file is split into 8×8 tiles, loaded asynchronously, and refined based on how large each tile appears on screen (per-tile PCA/OBB). Tiles outside the view or behind closer geometry are skipped; occlusion comes from a scene-wide Hi-Z depth pyramid.
 - **Orthophoto coloring**: points sample a GeoTIFF orthophoto, which must cover at least 25% of the cloud and use the same CRS. The colors can be switched between the orthophoto and elevation (or the file's RGB) at any time.
 - **DEM/DSM terrain**: an adaptive quadtree of GPU-tessellated patches with height displacement, textured by the orthophoto. Supports any raster GDAL reads (Float/Int elevation, IGN Terrain-RGB), with its declared nodata value.
+- **Terrain + what stands on it** (IGN LiDAR HD MNT + MNH, or MNT + MNS): the height model is drawn semi-transparent over the terrain, only where it rises above a height threshold (live slider, 0.5 m by default). The terrain underneath is left without orthophoto (neutral grey), since the image there shows the top of the building or tree.
 - **GPU depth subsampling**: gives an even screen-space point density.
 - **Navigation**: orbit, look-around, pan, fly, and double-click to focus. Perspective and orthographic projections, Z exaggeration.
 - **One CRS per scene**: taken from the first input that declares one (point clouds first). Orthophotos and DEMs in another CRS are warped into it on load (GDAL, bilinear). Point clouds aren't reprojected; one in another CRS is reported.
@@ -72,6 +73,10 @@ build/macos-arm64/bin/lasviewer tile_a.copc.laz tile_b.copc.laz -o ortho.tif
 
 # A DEM with a point cloud on top
 build/macos-arm64/bin/lasviewer dem.tif cloud.copc.laz -o ortho.tif
+
+# Terrain (MNT) + height model (MNH), or + surface model (MNS)
+build/macos-arm64/bin/lasviewer -mnt mnt.tif -mnh mnh.tif -o ortho.tif
+build/macos-arm64/bin/lasviewer -mnt mnt.tif -mns mns.tif -o ortho.tif
 ```
 
 On the command line, `.tif` files are sorted by content: 8-bit RGB(A) imagery is the orthophoto, and elevation rasters are DEMs. 8-bit Terrain-RGB DEMs look like imagery, so pass them with `-d`. Run `lasviewer -h` for all options.
@@ -151,7 +156,7 @@ Per-target settings live in `mk/` hook files next to the module, for example `Vi
 
 `GNUmakefile` (plain GNU make, `make build`) builds the same binary from the same tree; it is kept temporarily, for comparison.
 
-`--snapshot out.ppm` renders until every layer has finished loading, saves the frame, and exits. It's useful for scripted visual checks.
+`--snapshot out.ppm` renders until every layer has finished loading, saves the frame, and exits. It's useful for scripted visual checks. `--view x,y,z,distance,yaw,pitch` sets the starting view: world point in the scene CRS, distance in meters, angles in degrees.
 
 ---
 

@@ -1,6 +1,7 @@
 // viewer_ui.cpp — ImGui panels: layers, view settings, log, help.
 #include "raster.h"
 #include "log_capture.h"
+#include "dem_layer.h"
 #include "viewer_app.h"
 
 #include <imgui.h>
@@ -108,6 +109,19 @@ void ViewerApp::drawMainPanel() {
         ImGui::SetNextItemWidth(160);
         ImGui::SliderFloat("Point density", &settings_.pointDensityMul, 0.1f, 8.0f, "%.2fx",
                            ImGuiSliderFlags_Logarithmic);
+        bool anyAbove = false;
+        for (const auto& l : scene_.layers) {
+            const auto* d = dynamic_cast<const DemLayer*>(l.get());
+            anyAbove |= d && d->role() == DemRole::AboveGround;
+        }
+        if (anyAbove) {
+            ImGui::SetNextItemWidth(160);
+            ImGui::SliderFloat("Height threshold", &settings_.heightThreshold, 0.1f, 50.0f,
+                               "%.1f m", ImGuiSliderFlags_Logarithmic);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Above-ground surfaces (DHM/DSM) are shown only above this "
+                                  "height;\nthe DTM has no orthophoto under them");
+        }
         ImGui::Checkbox("Occlusion culling", &settings_.useOcclusion);
         ImGui::SameLine();
         ImGui::Checkbox("Tile boxes", &settings_.showTileBoxes);

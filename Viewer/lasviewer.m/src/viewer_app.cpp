@@ -180,6 +180,14 @@ bool ViewerApp::init(const LoadPlan& plan) {
         return false;
     }
     resetView();
+    if (initialView_) {
+        glm::vec3 t = scene_.frame.toGL(viewTarget_.x, viewTarget_.y, viewTarget_.z);
+        t.y *= settings_.zScale;
+        camera_.target = t;
+        camera_.distance = static_cast<float>(viewDistance_ / scene_.frame.scale);
+        camera_.yaw = static_cast<float>(glm::radians(viewYawDeg_));
+        camera_.pitch = static_cast<float>(glm::radians(viewPitchDeg_));
+    }
     return true;
 }
 
@@ -301,13 +309,16 @@ void ViewerApp::renderFrame() {
 
     bool wantHiZ = false;
     for (auto& layer : scene_.layers) {
-        if (!layer->visible) continue;
+        if (!layer->visible || layer->transparent()) continue;
         layer->render(ctx);
         wantHiZ |= layer->wantsHiZ();
     }
-    // Next frame's occlusion culling uses this frame's depth.
+    // Next frame's occlusion culling uses this frame's depth, opaque layers
+    // only.
     if (wantHiZ && hizOk_ && settings_.useOcclusion) hiz_.build(fbW_, fbH_);
     else if (hizOk_) hiz_.invalidate();
+    for (auto& layer : scene_.layers)
+        if (layer->visible && layer->transparent()) layer->render(ctx);
 
     for (auto& layer : scene_.layers)
         if (layer->visible) layer->renderOverlay(ctx);

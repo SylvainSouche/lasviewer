@@ -57,6 +57,13 @@ Load **LAZ/LAS point clouds** (`.las`, `.laz`) in full with laz-perf, and stream
 ### 2.2
 Load **DEMs / DSMs** from any raster GDAL reads, rendered as a GPU-tessellated adaptive mesh (§9.7). Band 1 is read as Float32. An 8-bit raster with ≥3 bands is decoded as **Terrain RGB**: `elevation = (R*65536 + G*256 + B) * 0.1 - 10000` (IGN MNS LiDAR HD); decoded values below -9000 become nodata (-9999). The file's declared nodata value is honoured; when none is declared, values below -9000 (and NaN) are nodata.
 
+### 2.2b
+**Terrain and what stands on it.** A height model (DHM, IGN "MNH": height above ground) or a surface model (DSM, IGN "MNS": absolute elevation) can be laid over a terrain model (DTM, IGN "MNT"):
+- each such raster is paired with the DEM it overlaps most, which becomes its ground; one ground may carry several;
+- the above-ground surface is built on the height raster's own grid, from the ground resampled onto that grid (bilinear, nodata-aware, `resampleOnGrid`): `ground + max(height, 0)`, with `height = DSM − DTM` for a DSM (`composeAboveGround`). It is a complete surface, the ground itself where nothing stands, so that objects keep their sides and no nodata holes reach the mesh;
+- the ground elevation on that grid goes with it as an auxiliary texture; the fragment shader discards what is less than the **height threshold** above it (§9.10);
+- the ground gets the height of what stands on it (the tallest, over all its above-ground rasters, resampled onto the ground grid, `heightAboveGround`) as its auxiliary texture; where that is above the threshold, the ground is not textured with the orthophoto (§9.10).
+
 ### 2.3
 Load **orthophotos** from any raster GDAL reads (RGB/RGBA, grayscale replicated to RGB), as RGBA8. Non-8-bit imagery is clamped to 0–255 (a warning is logged).
 
@@ -75,7 +82,9 @@ Command-line interface:
 - `.las` / `.laz` → point cloud loaded in full; names containing `.copc.` → streamed COPC layer.
 - `.tif` / `.tiff` → classified by content: 8-bit with ≥3 bands is the **orthophoto**; anything else is a **DEM**. More than one orthophoto is an error.
 - `-o ortho.tif` sets the orthophoto; `-d dem.tif` adds a DEM explicitly (required for 8-bit Terrain-RGB DEMs, which look like imagery); `-cop cloud.laz` adds a point cloud explicitly.
+- `-dtm` / `-mnt` are aliases of `-d`; `-dhm` / `-mnh` add a height model and `-dsm` / `-mns` a surface model, laid over the DTM they overlap (§2.2b). Either needs at least one DEM.
 - `--snapshot out.ppm` renders until every layer is idle, writes the frame as a binary PPM, and exits.
+- `--view x,y,z,d,yaw,pitch` starts orbiting world point (x, y, z) of the scene CRS from d meters, yaw and pitch in degrees, instead of framing the whole scene.
 - `-h` / `--help` prints usage and exits.
 - The old forms `lasviewer cloud.laz ortho.tif` and `lasviewer dem.tif ortho.tif` keep working, through the content rule.
 
@@ -294,6 +303,13 @@ DEM mesh texturing: the orthophoto and the DEM are both in the scene CRS (§3.1)
 
 ### 9.9
 DEM elevations are read through GDAL as Float32 (`GDALRasterBand::RasterIO`), for any sample type; Terrain RGB per §2.2.
+
+### 9.10
+**Above-ground surfaces** (§2.2b):
+- The DEM mesh is built from a `DemSource` (a function producing the raster and an optional auxiliary raster on the same grid, re-run for every rebuild) rather than a path. The auxiliary raster is uploaded as an R32F texture sampled with the DEM UV.
+- DHM/DSM layers are drawn **semi-transparent** (opacity per layer, 0.5 by default), after all opaque layers and after the Hi-Z pyramid is built, so they never hide COPC tiles from occlusion culling. Each is drawn twice: a depth-only pass, then a blended colour pass with `GL_LEQUAL` and no depth writes, so only the nearest layer of the surface is blended (the far sides of objects don't show through the near ones).
+- The fragment shader discards fragments less than the height threshold above the ground (`ViewSettings::heightThreshold`, meters, "Height threshold" in the View panel, 0.5 m by default). The cut is per fragment, so the threshold is live and objects keep their sides down to it.
+- The ground layer, while one of its above-ground layers is visible, is drawn neutral grey instead of the orthophoto where the height above it exceeds the threshold. In elevation-ramp mode it is unchanged.
 
 ---
 

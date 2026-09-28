@@ -127,9 +127,17 @@ void main() {
 // DEM surface fragment shader (fed by kMeshTessEval).
 //   uHasTexture == 1 : sample the orthophoto texture
 //   uHasTexture == 0 : elevation color ramp (dark blue-violet -> teal -> yellow)
+// uAuxMode relates the surface to the auxiliary raster uAux (meters, on the
+// DEM grid, see DemAux in dem_tess_mesh.h):
+//   1 : uAux is the ground — cut what is less than uThreshold above it
+//   2 : uAux is the height of what stands here — no orthophoto where it is
+//       above uThreshold (the image shows the top of that object, not the
+//       ground): neutral grey instead, which reads through the translucent
+//       objects above better than the elevation ramp
 const char* kMeshFrag = R"GLSL(
 #version 330 core
 in vec2 vUV;
+in vec2 vHeightUV;
 in float vElev;
 in float vEdgeDist;
 out vec4 FragColor;
@@ -138,8 +146,22 @@ uniform int uHasTexture;
 uniform float uMinElev;
 uniform float uMaxElev;
 uniform int uShowMasterEdges; // G key / DEM "Patch edges" — diagnostic, off by default
+uniform float uOpacity;
+uniform int uAuxMode;
+uniform sampler2D uAux;
+uniform float uThreshold;     // meters
+uniform float uFrameScale;    // GL unit -> meters
+uniform float uFrameCenterZ;  // meters at GL y = 0
 
 void main() {
+    bool covered = false;
+    if (uAuxMode == 1) {
+        float aboveGround = vElev * uFrameScale + uFrameCenterZ - texture(uAux, vHeightUV).r;
+        if (aboveGround < uThreshold) discard;
+    } else if (uAuxMode == 2) {
+        covered = uHasTexture == 1 && texture(uAux, vHeightUV).r > uThreshold;
+    }
+
     // Master (coarse patch) edges — see vEdgeDist's producer in
     // kMeshTessEval. Drawn in
     // place of the orthophoto/elevation-ramp color, not blended over it,
@@ -155,8 +177,10 @@ void main() {
         return;
     }
 
-    if (uHasTexture == 1) {
-        FragColor = texture(uTexture, vUV);
+    if (covered) {
+        FragColor = vec4(vec3(0.30), uOpacity);
+    } else if (uHasTexture == 1) {
+        FragColor = vec4(texture(uTexture, vUV).rgb, uOpacity);
     } else {
         // Elevation-based color ramp: dark blue-violet (low) -> teal (mid)
         // -> yellow (high) — a viridis-inspired gradient. Replaced the
@@ -172,7 +196,7 @@ void main() {
         vec3 c = (t < 0.5)
             ? mix(low,  mid,  t * 2.0)
             : mix(mid,  high, (t - 0.5) * 2.0);
-        FragColor = vec4(c, 1.0);
+        FragColor = vec4(c, uOpacity);
     }
 }
 )GLSL";
@@ -360,6 +384,7 @@ in vec3 vPosTC[];
 in vec2 vUVTC[];
 in vec2 vHeightUVTC[];
 out vec2 vUV;
+out vec2 vHeightUV;
 out float vElev;
 out float vEdgeDist; // parametric distance to nearest coarse-patch edge —
                      // see kMeshFrag for the red master-edge visualization
@@ -457,6 +482,7 @@ void main() {
 
     gl_Position = uProj * uView * vec4(displaced, 1.0);
     vUV = uv;
+    vHeightUV = heightUV;
     vElev = fineElev;  // the ACTUAL displayed elevation (pre-zScale) — more
                        // accurate for the color ramp than the coarse
                        // bilinear guess now that the true value is

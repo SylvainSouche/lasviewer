@@ -19,19 +19,48 @@
 //   - Two UV sets: patchUVs (orthophoto-relative, for color) and
 //     patchHeightUVs (DEM-raster-relative, for the heightmap). The ortho and
 //     DEM generally cover different extents, so they must not be conflated.
+//   - An optional auxiliary raster on the DEM's grid (see DemSourceData)
+//     lets the fragment shader relate the surface to another one: cut an
+//     above-ground surface below a height, or tell a ground surface where
+//     something stands on it.
 #pragma once
 #include "gl_platform.h"
+#include "raster.h"
 #include "scene_frame.h"
 #include <glm/glm.hpp>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
-struct Orthophoto; // raster.h
+// What a mesh is built from: the elevation raster, plus an optional
+// auxiliary raster on exactly the same grid, in meters (empty = none):
+//   DemAux::Ground        aux = the ground elevation under this surface
+//   DemAux::HeightAbove   aux = the height of what stands on this surface
+struct DemSourceData {
+    DemRaster dem;
+    std::vector<float> aux;
+};
+// Produces the data; called again for every rebuild, possibly on a worker
+// thread, so it must not touch GL or shared mutable state.
+using DemSource = std::function<bool(DemSourceData&)>;
+
+enum class DemAux {
+    None,
+    Ground,      // above-ground surface: fragments less than `threshold` above aux are cut
+    HeightAbove, // ground surface: the orthophoto is not drawn where aux > `threshold`
+};
+
+// Per-draw appearance.
+struct DemStyle {
+    float opacity = 1.0f;   // < 1: blended (the caller sets the blend state)
+    DemAux auxMode = DemAux::None;
+    float threshold = 0.0f; // meters, see DemAux
+};
 
 // True if the current GL context supports tessellation shaders (GL >= 4.0).
 // Call after glfwMakeContextCurrent().
@@ -48,8 +77,10 @@ struct DEMTessMesh {
     std::vector<float> patchEdgeConstraint; // 4 floats/vertex
     int patchCount = 0;
 
-    // Heightmap in GL-space Y, kept only until uploadGPU().
+    // Heightmap in GL-space Y, and the auxiliary raster (meters, same grid),
+    // kept only until uploadGPU().
     std::vector<float> heightmapGLSpace;
+    std::vector<float> auxData;
     int heightmapSrcW = 0, heightmapSrcH = 0;
 
     SceneFrame frame;
@@ -71,12 +102,13 @@ struct DEMTessMesh {
 
     GLuint vao = 0, posVBO = 0, uvVBO = 0, heightUVVBO = 0, edgeConstraintVBO = 0;
     GLuint heightmapTex = 0;
+    GLuint auxTex = 0;     // 0 = no auxiliary raster
     GLuint colorTex = 0;   // orthophoto; 0 = elevation ramp
     bool showTexture = true; // false = elevation ramp even with a colorTex
 
     // Step 1 (no GL context needed). ortho may be null. cancelFlag, if set
     // during the build, makes it return false early.
-    bool loadFromDEM(const std::string& path, const Orthophoto* ortho, const SceneFrame& frame,
+    bool loadFromDEM(const DemSource& source, const Orthophoto* ortho, const SceneFrame& frame,
                      double angleThresholdDeg = 1.0, int maxLevelParam = 5,
                      const std::atomic<bool>* cancelFlag = nullptr);
 
@@ -88,6 +120,7 @@ struct DEMTessMesh {
     // Box-filter downsample to capTexels if needed, then (re)upload.
     bool uploadHeightmapTexture(const std::vector<float>& glSpaceData,
                                 int srcW, int srcH, int capTexels);
+    bool hasAux() const { return auxTex != 0; }
 
     // tessProgram: shaders::linkTessProgram(kMeshTessVert, kMeshTessControl,
     // kMeshTessEval, kMeshFrag). fov in degrees. targetPixelsPerSegment sets
@@ -95,7 +128,8 @@ struct DEMTessMesh {
     void render(GLuint tessProgram, const glm::mat4& V, const glm::mat4& P,
                 const glm::vec3& camPosGL, float fov, float viewportH,
                 float zScale, float targetPixelsPerSegment,
-                bool useDisplacement, bool showMasterEdges) const;
+                bool useDisplacement, bool showMasterEdges,
+                const DemStyle& style = {}) const;
 
     void releaseGeometryGL(); // everything except the color texture
     void destroy();
@@ -107,7 +141,7 @@ struct DEMTessMesh {
     // in a finished build. At most one worker runs; a newer request cancels
     // the running build and is started once it has exited (intermediate
     // requests coalesce into the latest).
-    void requestBackgroundBuild(const std::string& path, const Orthophoto* ortho,
+    void requestBackgroundBuild(const DemSource& source, const Orthophoto* ortho,
                                 const SceneFrame& frame, double angleThresholdDeg,
                                 int maxLevelParam);
     bool pollBackgroundBuild(const Orthophoto* ortho);
@@ -116,7 +150,7 @@ struct DEMTessMesh {
     ~DEMTessMesh();
 
 private:
-    void startBackgroundBuildNow(const std::string& path, const Orthophoto* ortho,
+    void startBackgroundBuildNow(const DemSource& source, const Orthophoto* ortho,
                                  const SceneFrame& frame, double angleThresholdDeg,
                                  int maxLevelParam);
 
@@ -130,7 +164,7 @@ private:
     std::shared_ptr<std::atomic<bool>> bgCancelFlag;
 
     bool bgHasPendingRequest = false;
-    std::string bgPendingPath;
+    DemSource bgPendingSource;
     const Orthophoto* bgPendingOrtho = nullptr;
     SceneFrame bgPendingFrame;
     double bgPendingAngle = 1.0;

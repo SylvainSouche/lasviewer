@@ -18,6 +18,16 @@ public:
     // then quit (for scripted checks). The window then opens without focus
     // and ignores keyboard/mouse input. Call before init().
     void setSnapshotPath(const std::string& path) { snapshotPath_ = path; }
+    // Initial view instead of the whole scene: orbit around world point
+    // (x, y, z) in the scene CRS, at `distance` meters, yaw and pitch in
+    // degrees. Call before init().
+    void setInitialView(const glm::dvec3& target, double distance, double yawDeg, double pitchDeg) {
+        initialView_ = true;
+        viewTarget_ = target;
+        viewDistance_ = distance;
+        viewYawDeg_ = yawDeg;
+        viewPitchDeg_ = pitchDeg;
+    }
     void run();
 
     // GLFW callback entry points.
@@ -70,4 +80,7 @@ private:
     glm::dvec3 lastPick_{0.0};
     double fps_ = 0.0;
     std::string snapshotPath_;
+    bool initialView_ = false;
+    glm::dvec3 viewTarget_{0.0};
+    double viewDistance_ = 0.0, viewYawDeg_ = 0.0, viewPitchDeg_ = 0.0;
 };

@@ -7,15 +7,22 @@
 #include <cstdio>
 #include <iostream>
 
-DemLayer::DemLayer(const std::string& path, const Orthophoto* ortho)
-    : Layer(path.substr(path.find_last_of('/') + 1), path), ortho_(ortho) {}
+DemLayer::DemLayer(const std::string& path, const Orthophoto* ortho, DemSource source,
+                   DemRole role, const char* kindName)
+    : Layer(path.substr(path.find_last_of('/') + 1), path),
+      ortho_(ortho),
+      source_(std::move(source)),
+      role_(role),
+      kindName_(kindName) {
+    if (role_ != DemRole::AboveGround) opacity_ = 1.0f;
+}
 
 DemLayer::~DemLayer() { mesh_.destroy(); }
 
 bool DemLayer::load(const SceneFrame& frame) {
     frame_ = frame;
     // maxLevel 0 (the coarse grid only) is fast whatever the DEM size.
-    if (!mesh_.loadFromDEM(path(), ortho_, frame_, collapseAngleDeg_, 0) ||
+    if (!mesh_.loadFromDEM(source_, ortho_, frame_, collapseAngleDeg_, 0) ||
         !mesh_.uploadGPU(ortho_)) {
         return false;
     }
@@ -24,7 +31,7 @@ bool DemLayer::load(const SceneFrame& frame) {
 }
 
 void DemLayer::requestRebuild() {
-    mesh_.requestBackgroundBuild(path(), ortho_, frame_, collapseAngleDeg_, maxLevel_);
+    mesh_.requestBackgroundBuild(source_, ortho_, frame_, collapseAngleDeg_, maxLevel_);
 }
 
 GLBounds DemLayer::bounds() const {
@@ -37,15 +44,55 @@ GLBounds DemLayer::bounds() const {
 
 void DemLayer::update(const RenderContext&) { mesh_.pollBackgroundBuild(ortho_); }
 
+DemStyle DemLayer::style(const RenderContext& ctx) const {
+    DemStyle st;
+    st.opacity = opacity_;
+    st.threshold = ctx.settings->heightThreshold;
+    if (role_ == DemRole::AboveGround) {
+        st.auxMode = DemAux::Ground;
+    } else if (role_ == DemRole::Ground) {
+        bool anyVisible = false;
+        for (const Layer* l : above_) anyVisible |= l->visible;
+        if (anyVisible) st.auxMode = DemAux::HeightAbove;
+    }
+    return st;
+}
+
 void DemLayer::render(const RenderContext& ctx) {
     if (!ctx.programs->tess) return;
+    DemStyle st = style(ctx);
+    auto draw = [&] {
+        mesh_.render(ctx.programs->tess, ctx.view, ctx.proj, ctx.camPos, ctx.fovDeg,
+                     ctx.viewportH, ctx.settings->zScale, pixelsPerSegment_, displacement_,
+                     masterEdges_, st);
+    };
     if (wireframe_) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-    mesh_.render(ctx.programs->tess, ctx.view, ctx.proj, ctx.camPos, ctx.fovDeg, ctx.viewportH,
-                 ctx.settings->zScale, pixelsPerSegment_, displacement_, masterEdges_);
+    if (st.opacity < 1.0f) {
+        // Depth pre-pass, then blend only the nearest layer of this surface:
+        // without it, the far sides of objects would show through the near
+        // ones in whatever order the patches happen to be drawn.
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        draw();
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDepthMask(GL_FALSE);
+        glDepthFunc(GL_LEQUAL);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        draw();
+        glDisable(GL_BLEND);
+        glDepthFunc(GL_LESS);
+        glDepthMask(GL_TRUE);
+    } else {
+        draw();
+    }
     if (wireframe_) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 }
 
 void DemLayer::drawUI() {
+    if (role_ == DemRole::AboveGround) {
+        ImGui::SetNextItemWidth(140);
+        ImGui::SliderFloat("Opacity", &opacity_, 0.05f, 1.0f, "%.2f");
+    }
     if (mesh_.colorTex) {
         int mode = mesh_.showTexture ? 1 : 0;
         bool changed = ImGui::RadioButton("Elevation", &mode, 0);
