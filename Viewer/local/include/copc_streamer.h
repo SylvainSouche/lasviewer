@@ -1,5 +1,9 @@
 // copc_streamer.h — async COPC tile streaming with apparent-size-driven LOD.
 //
+// The loader thread opens the file once with copc-lib, keeps its octree node
+// list, and answers each tile request from the nodes that intersect the tile
+// at the depth matching the requested resolution.
+//
 // Threading model: the main thread owns every Tile field. The loader thread
 // only ever sees an immutable LoadRequest (a copy of the tile's bounds) and
 // hands back a LoadResult by value; the main thread applies results in
@@ -10,6 +14,7 @@
 #include <glm/glm.hpp>
 #include <condition_variable>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -67,12 +72,16 @@ struct TileGrid {
     bool shutdown = false;
     std::thread worker;
     std::string copcPath;
+    double fileMaxX = 0, fileMaxY = 0; // header extent: the last tiles include their max edge
+    struct CopcSource;                 // copc-lib reader + node list (loader thread only)
+    std::unique_ptr<CopcSource> source;
     const Orthophoto* orthoPtr = nullptr;
 
     // bounds: the file's header extent. ortho may be null (elevation colors
     // only); it must outlive the grid.
     void init(const std::string& copcPath, const WorldBounds& bounds,
               const Orthophoto* ortho, const SceneFrame& frame);
+    TileGrid();  // out of line: CopcSource is only complete in the .cpp
     ~TileGrid();
     void requestLoad(int tileIndex, double resolution);
     void uploadTile(Tile& t, LoadResult& r);
@@ -86,5 +95,5 @@ struct TileGrid {
     size_t drawnTiles = 0, drawnPoints = 0, culledTiles = 0;
     void stop();
     void loaderRun();
-    LoadResult loadTile(const LoadRequest& req) const;
+    LoadResult loadTile(const LoadRequest& req); // loader thread
 };

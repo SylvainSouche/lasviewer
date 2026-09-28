@@ -1,3 +1,3 @@
-# Point-cloud and raster I/O (PDAL, GDAL); no OpenGL or GUI.
+# Point-cloud (laz-perf) and raster (GDAL) I/O; no OpenGL or GUI.
 PREREQS=GIS
 .include "mk.framework.mk"

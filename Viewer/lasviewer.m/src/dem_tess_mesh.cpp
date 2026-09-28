@@ -7,7 +7,7 @@
 // doc §4).
 //
 // UNVERIFIED ON REAL GPU HARDWARE. This was written and reviewed without
-// access to a GL 4.x context or a compiler with GLFW/PDAL/libtiff
+// access to a GL 4.x context or a compiler with GLFW and the other libraries
 // available (see specs.md §12.3 / README for the sandbox this was
 // developed in). Known specific risks to check first — see
 // docs/design-tessellation-displacement.md §9:

@@ -1,4 +1,4 @@
-// point_cloud.cpp — LAZ/LAS point cloud loading (PDAL).
+// point_cloud.cpp — LAZ/LAS point cloud loading (laz-perf).
 //
 //   - loadPointCloud()  : full load into the scene frame, RGB or elevation
 //                         colors, XY-grid thinning for very large clouds.
@@ -8,14 +8,10 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-#include <pdal/PointTable.hpp>
-#include <pdal/PointView.hpp>
-#include <pdal/Options.hpp>
-#include <pdal/StageFactory.hpp>
-#include <pdal/Stage.hpp>
-#include <pdal/Dimension.hpp>
-#include <pdal/Metadata.hpp>
-#include <pdal/SpatialReference.hpp>
+#include "las_format.h"
+#include "raster.h"
+
+#include <lazperf/readers.hpp>
 
 #include <iostream>
 #include <cmath>
@@ -58,60 +54,52 @@ static glm::vec3 elevationColor(double z, double zMin, double zRange) {
 }
 
 // ---------------------------------------------------------------------------
-// LAZ/LAS loader (PDAL)
+// LAZ/LAS loader
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// Record layout of an open laz-perf reader's file.
+bool layoutOf(const lazperf::header14& h, LasRecordLayout& out) {
+    return lasRecordLayout(h.point_format_id, h.point_record_length,
+                           glm::dvec3(h.scale.x, h.scale.y, h.scale.z),
+                           glm::dvec3(h.offset.x, h.offset.y, h.offset.z), out);
+}
+
+} // namespace
+
 bool loadPointCloud(const std::string& path, const SceneFrame& frame, PointCloud& cloud) {
-    pdal::StageFactory factory;
-    std::string driver = factory.inferReaderDriver(path);
-    if (driver.empty()) {
-        std::cerr << "ERROR: could not infer PDAL driver for: " << path << std::endl;
+    lazperf::reader::named_file reader(path); // throws lazperf::error on bad input
+    LasRecordLayout layout;
+    if (!layoutOf(reader.header(), layout)) {
+        std::cerr << "ERROR: unsupported LAS point format "
+                  << int(reader.header().point_format_id & 0x3F) << " in " << path << std::endl;
         return false;
     }
+    const bool hasRGB = layout.hasRGB();
+    const uint64_t count = reader.pointCount();
 
-    pdal::Stage* reader = factory.createStage(driver);
-    if (!reader) {
-        std::cerr << "ERROR: could not create PDAL stage: " << driver << std::endl;
-        return false;
-    }
-
-    pdal::Options options;
-    options.add("filename", path);
-    reader->setOptions(options);
-
-    pdal::PointTable table;
-    reader->prepare(table);
-    pdal::PointViewSet views = reader->execute(table);
-
-    pdal::PointLayoutPtr layout = table.layout();
-    bool hasRGB = layout->hasDim(pdal::Dimension::Id::Red) &&
-                  layout->hasDim(pdal::Dimension::Id::Green) &&
-                  layout->hasDim(pdal::Dimension::Id::Blue);
-    bool hasZ  = layout->hasDim(pdal::Dimension::Id::Z);
-
-    // First pass: compute bbox in world coords so we can recenter.
+    // First pass: decode every record, and the bbox for recentering.
     std::vector<double> rawPos; // x,y,z
     std::vector<uint16_t> rawRGB;
+    rawPos.reserve(count * 3);
+    if (hasRGB) rawRGB.reserve(count * 3);
+    std::vector<char> rec(static_cast<size_t>(layout.recordLength));
     bool first = true;
     glm::dvec3 bmin{0}, bmax{0};
-
-    for (const auto& view : views) {
-        for (pdal::PointId i = 0; i < view->size(); ++i) {
-            double x = view->getFieldAs<double>(pdal::Dimension::Id::X, i);
-            double y = view->getFieldAs<double>(pdal::Dimension::Id::Y, i);
-            double z = hasZ ? view->getFieldAs<double>(pdal::Dimension::Id::Z, i) : 0.0;
-            rawPos.push_back(x);
-            rawPos.push_back(y);
-            rawPos.push_back(z);
-            if (hasRGB) {
-                rawRGB.push_back(view->getFieldAs<uint16_t>(pdal::Dimension::Id::Red,   i));
-                rawRGB.push_back(view->getFieldAs<uint16_t>(pdal::Dimension::Id::Green, i));
-                rawRGB.push_back(view->getFieldAs<uint16_t>(pdal::Dimension::Id::Blue,  i));
-            }
-            glm::dvec3 p(x, y, z);
-            if (first) { bmin = bmax = p; first = false; }
-            else { bmin = glm::min(bmin, p); bmax = glm::max(bmax, p); }
+    for (uint64_t i = 0; i < count; ++i) {
+        reader.readPoint(rec.data());
+        double x, y, z;
+        layout.xyz(rec.data(), x, y, z);
+        rawPos.insert(rawPos.end(), {x, y, z});
+        if (hasRGB) {
+            uint16_t c[3];
+            layout.rgb(rec.data(), c);
+            rawRGB.insert(rawRGB.end(), {c[0], c[1], c[2]});
         }
+        glm::dvec3 p(x, y, z);
+        if (first) { bmin = bmax = p; first = false; }
+        else { bmin = glm::min(bmin, p); bmax = glm::max(bmax, p); }
     }
 
     if (rawPos.empty()) {
@@ -166,7 +154,7 @@ bool loadPointCloud(const std::string& path, const SceneFrame& frame, PointCloud
     // --- Spatial grid subsampling ---
     // LiDAR points are stored in scan order, so "every Nth point" leaves
     // spatial gaps. We divide the XY plane into a uniform grid and keep ONE
-    // point per occupied cell — same approach as PDAL's filters.sample.
+    // point per occupied cell (like PDAL's filters.sample).
     const size_t MAX_POINTS = 2'000'000;
     if (cloud.pointCount > MAX_POINTS) {
         double minX = cloud.bboxMin.x, maxX = cloud.bboxMax.x;
@@ -182,11 +170,12 @@ bool loadPointCloud(const std::string& path, const SceneFrame& frame, PointCloud
         if (gridY > MAX_GRID_DIM) gridY = MAX_GRID_DIM;
         cellSize = std::max((maxX - minX) / gridX, (maxY - minY) / gridY);
 
-        std::vector<std::atomic<uint8_t>> occupied(static_cast<size_t>(gridX) * gridY);
-        for (auto& o : occupied) o.store(0, std::memory_order_relaxed);
-
-        std::vector<size_t> keepIdx(cloud.pointCount, SIZE_MAX);
-        std::atomic<size_t> outCount{0};
+        // Each cell keeps its lowest-index point (atomic min), so the result
+        // doesn't depend on thread scheduling.
+        const size_t kNone = SIZE_MAX;
+        std::vector<std::atomic<size_t>> cellFirst(static_cast<size_t>(gridX) * gridY);
+        for (auto& c : cellFirst) c.store(kNone, std::memory_order_relaxed);
+        std::vector<uint32_t> cellOf(cloud.pointCount);
 
 #if LASVIEWER_HAS_OPENMP
         int nThreads = std::max(1, std::min((int)cloud.pointCount / 100000,
@@ -195,36 +184,30 @@ bool loadPointCloud(const std::string& path, const SceneFrame& frame, PointCloud
 #endif
         for (size_t i = 0; i < cloud.pointCount; ++i) {
             double wx = cloud.positions[i * 3 + 0] * cloud.worldScale + cloud.worldCenter.x;
-            double wy = cloud.positions[i * 3 + 2] * cloud.worldScale + cloud.worldCenter.y;
+            double wy = -cloud.positions[i * 3 + 2] * cloud.worldScale + cloud.worldCenter.y;
             int cx = static_cast<int>((wx - minX) / cellSize);
             int cy = static_cast<int>((wy - minY) / cellSize);
             if (cx < 0) cx = 0; else if (cx >= gridX) cx = gridX - 1;
             if (cy < 0) cy = 0; else if (cy >= gridY) cy = gridY - 1;
             size_t cellIdx = static_cast<size_t>(cy) * gridX + cx;
-            uint8_t expected = 0;
-            if (occupied[cellIdx].compare_exchange_strong(expected, 1,
-                    std::memory_order_relaxed)) {
-                size_t outIdx = outCount.fetch_add(1, std::memory_order_relaxed);
-                if (outIdx < MAX_POINTS) {
-                    keepIdx[i] = outIdx;
-                }
+            cellOf[i] = static_cast<uint32_t>(cellIdx);
+            size_t cur = cellFirst[cellIdx].load(std::memory_order_relaxed);
+            while (i < cur && !cellFirst[cellIdx].compare_exchange_weak(
+                                  cur, i, std::memory_order_relaxed)) {
             }
         }
 
-        size_t outIdx = outCount.load(std::memory_order_relaxed);
-        if (outIdx > MAX_POINTS) outIdx = MAX_POINTS;
-        std::vector<float> tmpPos(outIdx * 3), tmpCol(outIdx * 3);
-        for (size_t i = 0; i < cloud.pointCount; ++i) {
-            if (keepIdx[i] < outIdx) {
-                size_t o = keepIdx[i];
-                tmpPos[o * 3 + 0] = cloud.positions[i * 3 + 0];
-                tmpPos[o * 3 + 1] = cloud.positions[i * 3 + 1];
-                tmpPos[o * 3 + 2] = cloud.positions[i * 3 + 2];
-                tmpCol[o * 3 + 0] = cloud.colors[i * 3 + 0];
-                tmpCol[o * 3 + 1] = cloud.colors[i * 3 + 1];
-                tmpCol[o * 3 + 2] = cloud.colors[i * 3 + 2];
-            }
+        std::vector<float> tmpPos, tmpCol;
+        tmpPos.reserve(std::min(cloud.pointCount, MAX_POINTS) * 3);
+        tmpCol.reserve(std::min(cloud.pointCount, MAX_POINTS) * 3);
+        for (size_t i = 0; i < cloud.pointCount && tmpPos.size() < MAX_POINTS * 3; ++i) {
+            if (cellFirst[cellOf[i]].load(std::memory_order_relaxed) != i) continue;
+            tmpPos.insert(tmpPos.end(), cloud.positions.begin() + i * 3,
+                          cloud.positions.begin() + i * 3 + 3);
+            tmpCol.insert(tmpCol.end(), cloud.colors.begin() + i * 3,
+                          cloud.colors.begin() + i * 3 + 3);
         }
+        size_t outIdx = tmpPos.size() / 3;
         cloud.positions = std::move(tmpPos);
         cloud.colors = std::move(tmpCol);
         std::cerr << "  spatial subsample: " << cloud.pointCount << " -> " << outIdx
@@ -271,64 +254,12 @@ bool loadPointCloud(const std::string& path, const SceneFrame& frame, PointCloud
 // ---------------------------------------------------------------------------
 
 bool readCloudHeader(const std::string& path, CloudHeader& out) {
-    pdal::StageFactory factory;
-    std::string driver = factory.inferReaderDriver(path);
-    if (driver.empty()) return false;
-    pdal::Stage* reader = factory.createStage(driver);
-    if (!reader) return false;
-    pdal::Options options;
-    options.add("filename", path);
-    reader->setOptions(options);
-    pdal::PointTable table;
-    reader->prepare(table);
-
-    try {
-        pdal::SpatialReference srs = reader->getSpatialReference();
-        if (srs.empty()) srs = table.anySpatialReference();
-        if (!srs.empty()) {
-            out.wkt = srs.getWKT();
-            std::string code = srs.identifyHorizontalEPSG();
-            if (!code.empty()) out.epsg = std::stoi(code);
-        }
-    } catch (const std::exception&) {
-        out.epsg = 0;
-    }
-
-    pdal::MetadataNode meta = table.metadata();
-    pdal::MetadataNode reader_meta = meta.findChild(driver);
-    pdal::MetadataNode countNode = meta.findChild("count");
-    if (countNode.empty() && !reader_meta.empty()) countNode = reader_meta.findChild("count");
-    if (!countNode.empty()) {
-        try { out.pointCount = std::stoull(countNode.value()); } catch (const std::exception&) {}
-    }
-
-    pdal::MetadataNode boundsNode = meta.findChild("bounds");
-    if (!boundsNode.empty()) {
-        try {
-            out.bounds.extendXY(std::stod(boundsNode.findChild("minx").value()),
-                                std::stod(boundsNode.findChild("miny").value()),
-                                std::stod(boundsNode.findChild("maxx").value()),
-                                std::stod(boundsNode.findChild("maxy").value()));
-            out.bounds.extendZ(std::stod(boundsNode.findChild("minz").value()),
-                               std::stod(boundsNode.findChild("maxz").value()));
-            return true;
-        } catch (const std::exception& e) {
-            std::cerr << "WARNING: could not parse PDAL bounds metadata (" << e.what()
-                      << ") — scanning points instead" << std::endl;
-        }
-    }
-    // Fallback: read every point.
-    pdal::PointViewSet views = reader->execute(table);
-    uint64_t n = 0;
-    for (const auto& view : views) {
-        for (pdal::PointId i = 0; i < view->size(); ++i, ++n) {
-            double x = view->getFieldAs<double>(pdal::Dimension::Id::X, i);
-            double y = view->getFieldAs<double>(pdal::Dimension::Id::Y, i);
-            double z = view->getFieldAs<double>(pdal::Dimension::Id::Z, i);
-            out.bounds.extendXY(x, y, x, y);
-            out.bounds.extendZ(z, z);
-        }
-    }
-    out.pointCount = n;
-    return n > 0;
+    lazperf::reader::named_file reader(path); // throws lazperf::error on bad input
+    const lazperf::header14& h = reader.header();
+    out.pointCount = reader.pointCount();
+    out.bounds.extendXY(h.minx, h.miny, h.maxx, h.maxy);
+    out.bounds.extendZ(h.minz, h.maxz);
+    out.wkt = lasCrsWkt(path);
+    out.epsg = horizontalEPSG(out.wkt);
+    return out.pointCount > 0 && out.bounds.valid();
 }

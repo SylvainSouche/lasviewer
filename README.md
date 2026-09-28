@@ -1,6 +1,6 @@
 # lasviewer
 
-A lightweight C++ viewer for **LAZ/LAS/COPC point clouds** and **GeoTIFF DEMs**, with orthophoto draping. Built on GLFW + OpenGL, PDAL for point cloud I/O, GDAL for rasters and Dear ImGui for the interface.
+A lightweight C++ viewer for **LAZ/LAS/COPC point clouds** and **GeoTIFF DEMs**, with orthophoto draping. Built on GLFW + OpenGL, laz-perf and copc-lib for point clouds, GDAL for rasters and Dear ImGui for the interface.
 
 ![lasviewer](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue)
 ![language](https://img.shields.io/badge/language-C%2B%2B17-orange)
@@ -12,7 +12,7 @@ A lightweight C++ viewer for **LAZ/LAS/COPC point clouds** and **GeoTIFF DEMs**,
 
 - **Several files in one scene**: adjacent LiDAR tiles, point clouds on top of a DEM, and so on. All layers share one coordinate frame, so they line up exactly.
 - **Layer panel** (Dear ImGui): per-layer visibility, colors and settings; view settings; log; help.
-- **LAZ/LAS**: loaded in full through PDAL, thinned on an XY grid to at most 2M points.
+- **LAZ/LAS**: loaded in full through laz-perf (LAS 1.0–1.4, point formats 0–10), thinned on an XY grid to at most 2M points.
 - **COPC streaming**: each file is split into 8×8 tiles, loaded asynchronously, and refined based on how large each tile appears on screen (per-tile PCA/OBB). Tiles outside the view or behind closer geometry are skipped; occlusion comes from a scene-wide Hi-Z depth pyramid.
 - **Orthophoto coloring**: points sample a GeoTIFF orthophoto, which must cover at least 25% of the cloud and use the same CRS. The colors can be switched between the orthophoto and elevation (or the file's RGB) at any time.
 - **DEM/DSM terrain**: an adaptive quadtree of GPU-tessellated patches with height displacement, textured by the orthophoto. Supports any raster GDAL reads (Float/Int elevation, IGN Terrain-RGB), with its declared nodata value.
@@ -24,24 +24,25 @@ A lightweight C++ viewer for **LAZ/LAS/COPC point clouds** and **GeoTIFF DEMs**,
 
 ## Quick Start
 
-### Install dependencies
+### Prerequisites
 
-**macOS (MacPorts):**
+A dependency that can be downloaded from one single source for every supported platform is fetched by the build itself; anything else is a prerequisite, installed with the platform's own package manager before building.
+
+| Prerequisite | MacPorts | Homebrew | pkgsrc (macOS, NetBSD, Linux) | FreeBSD pkg | Debian/Ubuntu apt | Alpine apk | Windows (OSGeo4W) |
+|---|---|---|---|---|---|---|---|
+| GDAL | `gdal` | `gdal` | `geography/gdal-lib` | `gdal` | `libgdal-dev` | `gdal-dev` | `gdal-devel` |
+| GLFW | `glfw` | `glfw` | `graphics/glfw` | `glfw` | `libglfw3-dev` | `glfw-dev` | — |
+| glm (headers) | `glm` | `glm` | `graphics/glm` | `glm` | `libglm-dev` | `glm-dev` | — |
+| OpenMP runtime | `libomp` (with clang) | `libomp` | with the compiler | with the compiler | with gcc (`libgomp`) | with gcc | with MSVC |
+| Build tools | `bmake cmake pkgconfig` | `bmake cmake pkg-config` | `bmake cmake pkgconf` | `cmake pkgconf` (base `make` is bmake) | `bmake cmake pkg-config` | `bmake cmake pkgconf` | — |
+| Tests only | `atf kyua` | `atf kyua` | `atf kyua` | in base | — | — | — |
+
+For example, on macOS with MacPorts:
 ```bash
-sudo port install glfw pdal gdal glm pkgconfig bmake atf kyua
+sudo port install gdal glfw glm libomp bmake cmake pkgconfig atf kyua
 ```
 
-**macOS (Homebrew):**
-```bash
-brew install glfw pdal gdal glm pkg-config bmake
-```
-
-**Linux (Debian/Ubuntu):**
-```bash
-sudo apt install libglfw3-dev libpdal-dev libgdal-dev libglm-dev pkg-config bmake
-```
-
-GDAL is also a PDAL dependency, so it's normally installed already. Dear ImGui (v1.91.9b, MIT) is downloaded from its release tag by the first build and checked against `GUI/libimgui.m/distinfo` (needs network access once); nothing of it is committed. ATF and Kyua are needed only for `bmake test`.
+Fetched and built by the first `bmake` (network access needed once; checked against each module's `distinfo`, nothing committed): **laz-perf** 3.4.0 and **copc-lib** 2.6.3 (point-cloud reading, built with their own CMake) and **Dear ImGui** 1.91.9b. All dependencies must come from one source: don't mix, e.g., a GDAL from MacPorts with one from Homebrew.
 
 The build uses [bmake-it](https://github.com/SylvainSouche/bmake-it), a BSD-make build system. Get it once and let bmake find its `mk/` files:
 
@@ -116,7 +117,7 @@ The side panel (toggle with **Tab**) holds the layer list and view settings. The
 | **OpenTopography** | `.laz`, `.las` | [OpenTopography](https://opentopography.org/) |
 | **Copernicus DEM** | GeoTIFF (GLO-30) | [Copernicus](https://spacedata.copernicus.eu/) |
 
-To make a DSM from a point cloud for testing:
+To make a DSM from a point cloud for testing, with PDAL's command-line tool if you have it (lasviewer itself doesn't use PDAL):
 ```bash
 pdal translate cloud.copc.laz dsm.tif --readers.copc.resolution=0.5 \
   --writers.gdal.resolution=1 --writers.gdal.output_type=max \
@@ -139,9 +140,9 @@ cd Geo && bmake       # build / test one framework (or one module: cd Geo/libgeo
 
 | Framework | Contents | Notes |
 |---|---|---|
-| `GIS` | PDAL, GDAL, glm, imported | headers staged from the install; glm is header-only |
+| `GIS` | laz-perf and copc-lib (fetched, built with CMake); GDAL and glm (imported) | glm is header-only |
 | `GUI` | GLFW imported; Dear ImGui fetched and compiled (`libimgui.a`) | ImGui comes from its release archive (`IMPORT=fetch:`), warnings off |
-| `Geo` | `libgeo.a`: point-cloud (PDAL) and raster (GDAL) I/O | no OpenGL; `raster_test` |
+| `Geo` | `libgeo.a`: point-cloud (laz-perf) and raster (GDAL) I/O | no OpenGL; `raster_test`, `las_test` |
 | `Viewer` | the `lasviewer` program | `basic_test`, `scene_test` |
 
 Headers follow bmake-it's visibility rules: `<fw>/include/` is public (reached through `PREREQS=`), `<fw>/local/include/` is shared by that framework's modules, `<module>/include/` is private.
@@ -158,12 +159,12 @@ Per-target settings live in `mk/` hook files next to the module, for example `Vi
 
 ```
 makefile                     bmake-it workspace
-GIS/                         libpdalcpp.m, libgdal.m, libglm.m: imported (IMPORT=, mk/ hooks)
+GIS/                         liblazperf.m, libcopc.m (fetched + CMake), libgdal.m, libglm.m (imported)
 GUI/                         libglfw.m (imported), libimgui.m (Dear ImGui, fetched: makefile + distinfo)
 Geo/
   include/                   public: point_cloud.h, raster.h, scene_frame.h
-  libgeo.m/src/              point_cloud.cpp (PDAL), raster.cpp (GDAL raster I/O, CRS, warping)
-  libgeo.m/tests/            raster_test.cpp
+  libgeo.m/src/              point_cloud.cpp (laz-perf), las_format.cpp (records, CRS), raster.cpp (GDAL)
+  libgeo.m/tests/            raster_test.cpp, las_test.cpp
 Viewer/
   local/include/             headers shared inside Viewer
   lasviewer.m/src/
@@ -175,7 +176,7 @@ Viewer/
     scene.cpp                Scene: layers + shared frame + orthophoto; loading
     point_cloud_layer.cpp    LAS/LAZ loaded in full
     copc_layer.cpp           COPC streaming layer (wraps TileGrid)
-    copc_streamer.cpp        TileGrid: loader thread, tile LOD, upload, draw
+    copc_streamer.cpp        TileGrid: copc-lib loader thread, tile LOD, upload, draw
     dem_layer.cpp            DEM layer (wraps DEMTessMesh)
     dem_tess_mesh.cpp        adaptive quadtree + GPU tessellation, background rebuilds
     hiz.cpp                  scene-wide Hi-Z occlusion pyramid, frustum test
@@ -185,7 +186,7 @@ Viewer/
 docs/                        design notes (DEM tessellation), Doxyfile
 ```
 
-**Loading.** The scene first reads every input's header (PDAL metadata; GDAL for rasters), picks the scene CRS, expresses every extent in it, and fixes one `SceneFrame` from their union:
+**Loading.** The scene first reads every input's header (LAS header and CRS records; GDAL for rasters), picks the scene CRS, expresses every extent in it, and fixes one `SceneFrame` from their union:
 
 ```
 GL_X =  (worldX - center.x) / scale     easting
@@ -210,7 +211,7 @@ Adding a new data type means writing one `Layer` subclass (in `Viewer/`); the `L
 ## Limitations
 
 - One orthophoto per scene, downsampled to ≤64 Mpx on load (GDAL averaging, using the file's overviews when it has them). It isn't streamed at higher resolution when zooming in.
-- COPC streaming uses a fixed 8×8 grid of PDAL `bounds` + `resolution` queries rather than the COPC octree, with one loader thread and no memory budget.
+- COPC streaming still splits each file into a fixed 8×8 grid of tiles: one loader thread answers each tile from copc-lib's octree nodes at the requested depth (decompressed nodes cached, 512 MB), but tiles aren't yet replaced by per-node loading, and there's no GPU memory budget.
 - Point attributes other than XYZ/RGB (classification, intensity, returns) aren't used yet.
 - Point clouds are not reprojected: a cloud in another CRS than the scene's is reported and will be misplaced.
 - DEM display needs an OpenGL 4.0+ context (macOS provides 4.1). On a 3.3-only context, DEMs are skipped and point clouds still work.

@@ -1,4 +1,4 @@
-// point_cloud.h — LAZ/LAS point cloud loading via PDAL
+// point_cloud.h — LAZ/LAS point cloud loading (laz-perf)
 #pragma once
 #include "scene_frame.h"
 #include <glm/glm.hpp>

@@ -1,6 +1,6 @@
 LIB=geo
 LIB_SHARED=NO
 OPENMP=yes
-LIBS=pdalcpp gdal
-TESTS_CXX=raster_test
+LIBS=copc-lib lazperf gdal
+TESTS_CXX=raster_test las_test
 .include "mk.lib.mk"

@@ -19,7 +19,8 @@ constexpr double kMinOrthoCoverage = 0.25;
 
 bool isCopcPath(const std::string& p) { return p.find(".copc.") != std::string::npos; }
 
-// PDAL reports unreadable files by throwing; turn that into a logged failure.
+// The LAS/LAZ/COPC readers report unreadable files by throwing; turn that into
+// a logged failure.
 template <typename F>
 bool guarded(const std::string& path, F&& f) {
     try {

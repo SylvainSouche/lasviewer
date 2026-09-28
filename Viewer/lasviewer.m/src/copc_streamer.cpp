@@ -1,7 +1,8 @@
 // copc_streamer.cpp — async COPC tile streaming.
 //
-// A background loader thread turns LoadRequests into LoadResults (PDAL
-// bounds+resolution query, GL-space transform, coloring). The main thread
+// A background loader thread turns LoadRequests into LoadResults (the
+// copc-lib octree nodes intersecting the tile at the depth matching the
+// requested resolution, GL-space transform, coloring). The main thread
 // drains results in update(), uploads them, and requests refinements based
 // on each tile's projected on-screen size.
 #include "copc_streamer.h"
@@ -13,17 +14,18 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-#include <pdal/PointTable.hpp>
-#include <pdal/PointView.hpp>
-#include <pdal/Options.hpp>
-#include <pdal/StageFactory.hpp>
-#include <pdal/Stage.hpp>
-#include <pdal/Dimension.hpp>
+#include "las_format.h"
+
+#include <copc-lib/geometry/box.hpp>
+#include <copc-lib/hierarchy/node.hpp>
+#include <copc-lib/io/copc_reader.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <list>
+#include <map>
+#include <tuple>
 #include <iostream>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -43,43 +45,102 @@ static glm::vec3 elevationColorRamp(float t) {
 // Loader thread
 // ===========================================================================
 
-TileGrid::LoadResult TileGrid::loadTile(const LoadRequest& req) const {
+struct TileGrid::CopcSource {
+    explicit CopcSource(const std::string& path) : reader(path) {
+        header = reader.CopcConfig().LasHeader();
+        spacing = reader.CopcConfig().CopcInfo().spacing;
+        nodes = reader.GetAllNodes();
+        for (const copc::Node& n : nodes) maxDepth = std::max(maxDepth, n.key.d);
+        if (!lasRecordLayout(header.PointFormatId(), header.PointRecordLength(),
+                             glm::dvec3(header.Scale().x, header.Scale().y, header.Scale().z),
+                             glm::dvec3(header.Offset().x, header.Offset().y, header.Offset().z),
+                             layout)) {
+            throw std::runtime_error("unsupported COPC point format");
+        }
+    }
+
+    // Shallowest depth whose point spacing is at most `resolution` (copc-lib's
+    // own rule); <= 0 means the full depth.
+    int depthAtResolution(double resolution) const {
+        if (resolution <= 0.0) return maxDepth;
+        double r = spacing;
+        for (int d = 0; d <= maxDepth; ++d) {
+            if (r <= resolution) return d;
+            r /= 2.0;
+        }
+        return maxDepth;
+    }
+
+    // Decompressed records of a node. Shallow nodes cover many tiles, so they
+    // are kept (least recently used evicted beyond kCacheBytes) instead of
+    // being decompressed again for every tile they overlap.
+    std::shared_ptr<const std::vector<char>> pointData(const copc::Node& node) {
+        Key k{node.key.d, node.key.x, node.key.y, node.key.z};
+        auto it = cache.find(k);
+        if (it != cache.end()) {
+            lru.splice(lru.begin(), lru, it->second.second);
+            return it->second.first;
+        }
+        auto data = std::make_shared<const std::vector<char>>(reader.GetPointData(node));
+        cacheBytes += data->size();
+        lru.push_front(k);
+        cache.emplace(k, std::make_pair(data, lru.begin()));
+        while (cacheBytes > kCacheBytes && lru.size() > 1) {
+            auto victim = cache.find(lru.back());
+            cacheBytes -= victim->second.first->size();
+            cache.erase(victim);
+            lru.pop_back();
+        }
+        return data;
+    }
+
+    copc::FileReader reader;
+    copc::las::LasHeader header;
+    std::vector<copc::Node> nodes;
+    double spacing = 0.0;
+    int maxDepth = 0;
+    LasRecordLayout layout;
+
+    using Key = std::tuple<int, int, int, int>; // octree d, x, y, z
+    static constexpr size_t kCacheBytes = 512u << 20;
+    std::list<Key> lru;
+    std::map<Key, std::pair<std::shared_ptr<const std::vector<char>>, std::list<Key>::iterator>> cache;
+    size_t cacheBytes = 0;
+};
+
+TileGrid::LoadResult TileGrid::loadTile(const LoadRequest& req) {
     LoadResult res;
     res.tileIndex = req.tileIndex;
     res.resolution = req.resolution;
+    if (!source) source = std::make_unique<CopcSource>(copcPath);
+    CopcSource& src = *source;
 
-    pdal::StageFactory factory;
-    std::string driver = factory.inferReaderDriver(copcPath);
-    pdal::Stage* reader = factory.createStage(driver);
-    if (!reader) return res;
+    const int depth = src.depthAtResolution(req.resolution);
+    const copc::Box box(req.minX, req.minY, req.maxX, req.maxY);
+    // Half-open tile extents so that edge points belong to one tile only; the
+    // last row/column also takes the header's max edge.
+    const bool lastX = req.maxX >= fileMaxX, lastY = req.maxY >= fileMaxY;
+    auto inside = [&](double x, double y) {
+        return x >= req.minX && (x < req.maxX || (lastX && x <= req.maxX)) &&
+               y >= req.minY && (y < req.maxY || (lastY && y <= req.maxY));
+    };
 
-    pdal::Options options;
-    options.add("filename", copcPath);
-    std::ostringstream bs;
-    bs.precision(17);
-    bs << "([" << req.minX << "," << req.maxX << "],"
-       << "[" << req.minY << "," << req.maxY << "],"
-       << "[" << req.minZ << "," << req.maxZ << "])";
-    options.add("bounds", bs.str());
-    if (req.resolution > 0) options.add("resolution", req.resolution);
-    reader->setOptions(options);
-
-    pdal::PointTable table;
-    reader->prepare(table);
-    pdal::PointViewSet views = reader->execute(table);
-    bool hasZ = table.layout()->hasDim(pdal::Dimension::Id::Z);
-
-    double zRange = std::max(frame.zMax - frame.zMin, 1e-6);
-    bool withOrtho = orthoPtr && orthoPtr->hasGeo;
-    for (const auto& view : views) {
-        size_t n = view->size();
+    const double zRange = std::max(frame.zMax - frame.zMin, 1e-6);
+    const bool withOrtho = orthoPtr && orthoPtr->hasGeo;
+    const LasRecordLayout& layout = src.layout;
+    for (const copc::Node& node : src.nodes) {
+        if (node.key.d > depth || node.point_count <= 0 || !node.key.Intersects(src.header, box))
+            continue;
+        std::shared_ptr<const std::vector<char>> records = src.pointData(node);
+        const std::vector<char>& data = *records; // decompressed LAS records
+        size_t n = data.size() / static_cast<size_t>(layout.recordLength);
         res.positions.reserve(res.positions.size() + n * 3);
         res.colors.reserve(res.colors.size() + n * 3);
         if (withOrtho) res.orthoColors.reserve(res.orthoColors.size() + n * 3);
-        for (pdal::PointId i = 0; i < n; ++i) {
-            double wx = view->getFieldAs<double>(pdal::Dimension::Id::X, i);
-            double wy = view->getFieldAs<double>(pdal::Dimension::Id::Y, i);
-            double wz = hasZ ? view->getFieldAs<double>(pdal::Dimension::Id::Z, i) : 0.0;
+        for (size_t i = 0; i < n; ++i) {
+            double wx, wy, wz;
+            layout.xyz(data.data() + i * layout.recordLength, wx, wy, wz);
+            if (!inside(wx, wy)) continue;
             glm::vec3 p = frame.toGL(wx, wy, wz);
             res.positions.insert(res.positions.end(), {p.x, p.y, p.z});
             glm::vec3 c = elevationColorRamp(static_cast<float>((wz - frame.zMin) / zRange));
@@ -142,6 +203,8 @@ void TileGrid::init(const std::string& copcPath_, const WorldBounds& bounds,
     orthoPtr = ortho;
     copcPath = copcPath_;
     frame = frame_;
+    fileMaxX = bounds.max.x;
+    fileMaxY = bounds.max.y;
     useOrthoColors = ortho && ortho->hasGeo;
     double minX = bounds.min.x, minY = bounds.min.y, minZ = bounds.min.z;
     double maxX = bounds.max.x, maxY = bounds.max.y, maxZ = bounds.max.z;
@@ -185,6 +248,8 @@ void TileGrid::stop() {
     if (worker.joinable()) worker.join();
     results.clear();
 }
+
+TileGrid::TileGrid() = default;
 
 TileGrid::~TileGrid() {
     stop();
@@ -341,7 +406,7 @@ void TileGrid::setUseOrthoColors(bool useOrtho) {
 }
 
 // ===========================================================================
-// desiredResolution: PDAL resolution giving ~1 point per 25 px² of the
+// desiredResolution: point spacing (m) giving ~1 point per 25 px² of the
 // tile's projected OBB area. Returns 0 to leave the tile as is.
 // ===========================================================================
 

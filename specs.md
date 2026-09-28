@@ -16,10 +16,15 @@ Windowing toolkit: **GLFW** (minimal, lightweight, no native widgets required).
 3D API: **modern OpenGL, core profile**. A 4.1 core context is requested first (needed for DEM tessellation), with a fallback to 3.3 core, where point clouds still work and DEM layers are skipped.
 
 ### 1.4
-LAS/LAZ reader: **PDAL** (`readers.copc`, `readers.las`, etc.).
+Point-cloud readers (PDAL is no longer used):
+- **laz-perf** (Hobu, Apache-2.0) for LAS/LAZ files read in full: LAS 1.0–1.4, compressed or not, point formats 0–10 (`Geo/libgeo.m/src/point_cloud.cpp`).
+- **copc-lib** (Rock Robotic, BSD) for COPC files: direct access to the octree (node list, per-node decompressed records) (`Viewer/lasviewer.m/src/copc_streamer.cpp`).
+- Record decoding (X, Y, Z, RGB by point format, scale/offset) and the CRS lookup are shared in `Geo/include/las_format.h`.
+
+Both are fetched from their release tags and built with their own CMake by bmake-it (§12.2), so they are not prerequisites. PDAL was dropped because lasviewer used only this small part of it, while it was the heaviest and least uniformly packaged dependency (Debian stopped packaging it after Debian 11).
 
 ### 1.5
-Raster reader: **GDAL** (orthophotos, DEMs, georeferencing, CRS, reprojection), in `Geo/libgeo.m/src/raster.cpp`. GDAL is already a PDAL dependency. It replaced hand-written GeoTIFF tag parsing on libtiff plus a direct PROJ dependency; neither libtiff nor PROJ is linked directly any more.
+Raster reader: **GDAL** (orthophotos, DEMs, georeferencing, CRS, reprojection), in `Geo/libgeo.m/src/raster.cpp`, installed as a prerequisite (§12.2d). It replaced hand-written GeoTIFF tag parsing on libtiff plus a direct PROJ dependency; neither libtiff nor PROJ is linked directly any more.
 
 ### 1.6
 Math library: **glm** (header-only).
@@ -44,7 +49,10 @@ OpenMP: `OPENMP=yes` on the `libgeo.m` and `lasviewer.m` modules (point-cloud th
 ## 2. Input Formats
 
 ### 2.1
-Load **LAZ/LAS point clouds** via PDAL (supports `.las`, `.laz`, `.copc.laz`).
+Load **LAZ/LAS point clouds** (`.las`, `.laz`) in full with laz-perf, and stream **COPC** files (`.copc.laz`) with copc-lib (§5).
+- Header bounds, point count and CRS come from the file itself (header, then VLRs and, for LAS 1.4, extended VLRs).
+- CRS: the OGC WKT record (`LASF_Projection` 2112, LAS 1.4), else the GeoTIFF key directory (34735, LAS ≤ 1.3), whose `ProjectedCSTypeGeoKey`/`GeographicTypeGeoKey` EPSG code is turned into WKT with GDAL.
+- Points: X, Y, Z (scaled int32), and RGB (uint16, shown /65535) when the format has it: formats 2, 3, 5, 7, 8, 10.
 
 ### 2.2
 Load **DEMs / DSMs** from any raster GDAL reads, rendered as a GPU-tessellated adaptive mesh (§9.7). Band 1 is read as Float32. An 8-bit raster with ≥3 bands is decoded as **Terrain RGB**: `elevation = (R*65536 + G*256 + B) * 0.1 - 10000` (IGN MNS LiDAR HD); decoded values below -9000 become nodata (-9999). The file's declared nodata value is honoured; when none is declared, values below -9000 (and NaN) are nodata.
@@ -94,7 +102,7 @@ Z scale defaults to **1.0× (true metric scale)**. The data CRS uses meters for 
 Z exaggeration adjustable at runtime: `E` (increase ×1.2), `D` (decrease ÷1.2), `U` (reset to 1.0×). Applied in the vertex shader via `uZScale` uniform.
 
 ### 3.5
-The frame is fixed **before any layer loads**, from the union of all inputs' header extents (PDAL `bounds` metadata; GeoTIFF tags for DEMs): `center` = centre of the union, `scale` = its diagonal. DEM elevations aren't known before loading, so a DEM-only scene has `center.z = 0`. The frame also carries the union Z range, used by every point elevation ramp, so all tiles and files map the same elevation to the same color.
+The frame is fixed **before any layer loads**, from the union of all inputs' header extents (LAS header bounds; GeoTIFF tags for DEMs): `center` = centre of the union, `scale` = its diagonal. DEM elevations aren't known before loading, so a DEM-only scene has `center.z = 0`. The frame also carries the union Z range, used by every point elevation ramp, so all tiles and files map the same elevation to the same color.
 
 ### 3.6
 Orthophoto affine transformed to GL space (including Z negation) for colorization purposes only. The orthophoto quad is NOT rendered as a flat plane (see spec 9.6).
@@ -139,10 +147,14 @@ Point size adjustable at runtime: `N` (smaller ÷1.3), `M` (bigger ×1.3). Appli
 ## 5. Streaming COPC
 
 ### 5.1
-For `.copc.laz` files, use **async tile loading** instead of loading the whole file. A background loader thread per COPC layer turns immutable `LoadRequest`s (tile index, resolution, bounds) into `LoadResult`s (GL-space positions, elevation colors and, when an orthophoto applies, orthophoto colors). **The main thread owns all `Tile` state**; the loader never touches a `Tile`, so there is no shared mutable state apart from the two mutex-protected queues.
+For `.copc.laz` files, use **async tile loading** instead of loading the whole file. A background loader thread per COPC layer turns immutable `LoadRequest`s (tile index, resolution, bounds) into `LoadResult`s (GL-space positions, elevation colors and, when an orthophoto applies, orthophoto colors).
+
+The loader opens the file **once** with copc-lib and keeps its octree node list. For a request it takes the nodes whose depth is at most `depthAtResolution(resolution)`, the shallowest depth whose point spacing (`CopcInfo.spacing / 2^d`) is at most the requested resolution, copc-lib's own rule, and that intersect the tile, then keeps the points inside the tile. Tile extents are half-open, `[min, max)`, with the file's max edge included in the last row/column, so a point belongs to exactly one tile.
+
+Decompressed nodes are cached, least recently used first out beyond **512 MB**. Shallow nodes overlap many tiles, and decompressing them again for each tile made one 55 M-point file take 25 s to settle instead of 2.3 s.
 
 ### 5.2
-**8×8 grid** (64 tiles) dividing the cloud's XY extent. Each tile is a PDAL spatial query with `bounds` + `resolution` options.
+**8×8 grid** (64 tiles) dividing the cloud's XY extent (from the header).
 
 ### 5.3
 **Coarse first render**: on startup, request ALL tiles at a coarse resolution targeting **~500 points/tile** (`coarseRes = sqrt(tileArea / 500)`, clamped to [1m, 50m]) for fast initial display. No waiting for full-resolution data.
@@ -355,10 +367,10 @@ Workspace layout (bmake-it): frameworks at the repository root, each with a `mak
 
 | Framework | PREREQS | Module(s) |
 |---|---|---|
-| `GIS` | — | imported: `libpdalcpp.m` (PDAL), `libgdal.m` (GDAL), `libglm.m` (glm, header-only) |
+| `GIS` | — | fetched + built with CMake: `liblazperf.m` (laz-perf, shared), `libcopc.m` (copc-lib, static); imported: `libgdal.m` (GDAL), `libglm.m` (glm, header-only) |
 | `GUI` | — | imported `libglfw.m` (GLFW); fetched `libimgui.m` (Dear ImGui: `IMPORT=fetch:`, static, `WARN=none`, `LIBS=glfw`) |
-| `Geo` | GIS | `libgeo.m`: static, `OPENMP=yes`, `LIBS=pdalcpp gdal` |
-| `Viewer` | Geo GIS GUI | `lasviewer.m`: `PROG=lasviewer`, `OPENMP=yes`, `LIBS=geo imgui glfw pdalcpp` |
+| `Geo` | GIS | `libgeo.m`: static, `OPENMP=yes`, `LIBS=copc-lib lazperf gdal` |
+| `Viewer` | Geo GIS GUI | `lasviewer.m`: `PROG=lasviewer`, `OPENMP=yes`, `LIBS=geo imgui glfw copc-lib lazperf` |
 
 Third-party libraries are grouped by subject, one module per library. Header visibility is per framework, so this keeps `Geo` (no OpenGL, no GUI) from seeing GLFW or ImGui headers; the Viewer sees everything.
 
@@ -366,7 +378,8 @@ Output: `build/<os>-<arch>/bin/lasviewer` at the workspace root (e.g. `build/mac
 
 ### 12.2
 **External libraries are ordinary library modules.** Each one imports the installed library instead of compiling it (`IMPORT=`), staging only the headers listed in `IMPORT_HEADERS=` into the framework's public include path, so consumers use `PREREQS=` and `LIBS=` exactly as for the project's own libraries. External frameworks set `PUBLIC_HEADERS_SYSTEM=yes` (their headers reach consumers via `-isystem`).
-- PDAL: `IMPORT_HEADERS=pdal`. GLFW: `IMPORT_HEADERS=GLFW` via pkg-config `glfw3`.
+- laz-perf 3.4.0 and copc-lib 2.6.3: `IMPORT=fetch:` + `FETCH_BUILD=cmake` (release archives, checked against each module's `distinfo`; tests, Python bindings and shared copc-lib off). copc-lib's release archive lacks its bundled laz-perf (a git submodule), so its CMake is pointed at `liblazperf.m`'s install prefix with `CMAKE_PREFIX_PATH`. laz-perf's CMake installs only its shared library, which carries an `@rpath` install name.
+- GLFW: `IMPORT_HEADERS=GLFW` via pkg-config `glfw3`.
 - Dear ImGui: `IMPORT=fetch:imgui`. The release archive (`FETCH_URL=`, GitHub tag `v1.91.9b`) is downloaded once into `distfiles/`, checked against the committed `distinfo` (SHA-256 and size), extracted into `work/`, and its `SRCS=` (core + the GLFW/OpenGL3 backends) compiled by bmake-it; `IMPORT_HEADERS=` are staged like an imported library's. Only the makefile, `distinfo` and `mk/` hook are committed.
 - GDAL installs its headers loose, so its module lists the 49 headers lasviewer's code reaches (the list and the command that regenerates it are in `GIS/libgdal.m/makefile`).
 - glm is header-only with no pkg-config file: its include directory comes from per-target hooks (`GIS/libglm.m/mk/pre.<os>.mk`), and no library is staged.
@@ -376,13 +389,21 @@ Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/la
 
 ### 12.2c
 **Workarounds for current bmake-it issues** (to remove when bmake-it is fixed):
-1. Imported link lists: bmake-it records pkg-config's `--static` list minus the library's own `-L` directory, so the transitive libraries can't be found. PDAL and GDAL are therefore resolved with `IMPORT_PREFIX=/opt/local` in `mk/pre.macos.mk` (their link line is then just `-lpdalcpp` / `-lgdal`, which is all a shared library needs).
-2. (Not needed with the current grouping, still a bmake-it bug:) a static library's transitive `-l` flags reach consumers without their library directory. `libgeo.a` passes `-lgdal` on; the Viewer finds it only because it lists `GIS` (for PDAL), whose library directory also holds GDAL.
-3. `IMPORT=fetch:` doesn't create `obj/` subdirectories for `SRCS` in subdirectories of the fetched tree, and doesn't put the tree's root on the include path when compiling it. `GUI/libimgui.m/mk/local.mk` does both.
-4. Not worked around: every build recompiles a `fetch:` module (the fetch step is a `.PHONY` prerequisite of its compile rules), about 10 s for ImGui.
+1. Imported link lists: bmake-it records pkg-config's `--static` list minus the library's own `-L` directory, so the transitive libraries can't be found. GDAL is therefore resolved with `IMPORT_PREFIX=/opt/local` in `GIS/libgdal.m/mk/pre.macos.mk` (its link line is then just `-lgdal`, which is all a shared library needs).
+2. `IMPORT=fetch:` (compiled by bmake-it) doesn't create `obj/` subdirectories for `SRCS` in subdirectories of the fetched tree, and doesn't put the tree's root on the include path: `GUI/libimgui.m/mk/local.mk`.
+3. `FETCH_BUILD=`: a dependency's install prefix isn't passed to the upstream build, so `GIS/libcopc.m` sets `CMAKE_PREFIX_PATH` itself; and the module's own consumer-side flags (`-l<LIBS>`, `-D<LIB>_BUILDING`, invalid for `LIB=copc-lib`) leak into the upstream build's environment, which `GIS/libcopc.m/mk/local.mk` strips.
+
+Not worked around:
+- a static library's transitive `-l` flags reach consumers without their library directory (harmless here: the Viewer lists `GIS`);
+- every build recompiles an `IMPORT=fetch:` module (ImGui);
+- upstream CMake builds target the host's macOS version (26.6) while bmake-it links for 26.0 (linker warnings; the deployment target isn't passed);
+- **a program isn't relinked when a static library it links from another framework changes** (`libgeo.a` → `lasviewer`): remove the program binary, or `bmake clean`, after changing `Geo`.
+
+### 12.2d
+**Prerequisites versus fetched modules.** A dependency that can be downloaded from one single source (a release archive) for every supported platform is a fetched module, built by bmake-it. Anything else is a **prerequisite**, installed with the platform's own package manager before building, all from one source (no mixing of package managers). Today: GDAL, GLFW, glm and the OpenMP runtime are prerequisites; laz-perf, copc-lib and Dear ImGui are fetched. README → Prerequisites lists the package names per platform.
 
 ### 12.3
-`bmake test` builds and runs the atf-c++ tests with Kyua: `Geo/libgeo.m/tests/raster_test.cpp` (linked against `libgeo.a`) and `Viewer/lasviewer.m/tests/{basic_test,scene_test}.cpp` (linked against the viewer's objects except `main.o`). JUnit results go to `build/<key>/runs/<run>/test-results.xml` in each module.
+`bmake test` builds and runs the atf-c++ tests with Kyua: `Geo/libgeo.m/tests/{raster_test,las_test}.cpp` (linked against `libgeo.a`) and `Viewer/lasviewer.m/tests/{basic_test,scene_test}.cpp` (linked against the viewer's objects except `main.o`). JUnit results go to `build/<key>/runs/<run>/test-results.xml` in each module.
 
 ### 12.4
 `.clang-tidy` config: bugprone-*, cert-*, misc-*, modernize-*, performance-*, readability-* checks. Magic numbers and identifier length suppressed.
@@ -398,7 +419,7 @@ Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/la
 ## 13. Testing
 
 ### 13.1
-Three atf-c++ test programs, run by `bmake test` (§12.3): `basic_test` re-derives formulas locally; `scene_test` tests the real frame and camera code; `raster_test` tests the real GDAL raster I/O on GeoTIFFs it writes itself: pixel-center georeferencing, downsampling and affine rescale, `.tfw` world files, declared and undeclared nodata, Terrain RGB decoding, horizontal CRS comparison and extent transformation, warping a DEM from EPSG:4326 into EPSG:2154 (value checked at a transformed point), and a rotated grid made north-up.
+Four atf-c++ test programs, run by `bmake test` (§12.3): `basic_test` re-derives formulas locally; `scene_test` tests the real frame and camera code; `raster_test` tests the real GDAL raster I/O on GeoTIFFs it writes itself: pixel-center georeferencing, downsampling and affine rescale, `.tfw` world files, declared and undeclared nodata, Terrain RGB decoding, horizontal CRS comparison and extent transformation, warping a DEM from EPSG:4326 into EPSG:2154 (value checked at a transformed point), and a rotated grid made north-up; `las_test` checks the LAS code on files it writes byte by byte: record layouts per point format, a LAS 1.2 file (format 2, CRS as GeoTIFF keys) and a LAS 1.4 file (format 7, 64-bit count, CRS as WKT in an extended VLR, compound CRS), with bounds, point count, EPSG, decoded positions and RGB.
 
 ### 13.2
 Test coverage:
@@ -451,7 +472,7 @@ Stats are shown in the UI: fps, points drawn per layer, tiles drawn and culled, 
 An orthophoto GDAL can't read is reported; the scene loads without it.
 
 ### 16.2
-An input PDAL can't open (driver inference failure, missing or corrupt file) is reported and skipped; the viewer exits with an error only if no layer at all could be loaded.
+A point-cloud file that can't be read (not a LAS/LAZ file, unsupported point format, missing or corrupt file) is reported and skipped; the viewer exits with an error only if no layer at all could be loaded.
 
 ### 16.3
 An orthophoto without georeferencing is accepted: it can't color points (logged per layer) and is stretched over DEMs (§9.8). A DEM without georeferencing is rejected.
