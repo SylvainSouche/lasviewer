@@ -404,16 +404,15 @@ Output: `build/<os>-<arch>/bin/lasviewer` at the workspace root (e.g. `build/mac
 Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/lasviewer.m/mk/local.macos.mk` (`-framework OpenGL Cocoa IOKit`), `local.linux.mk` (`-lGL`), `GIS/libglm.m/mk/pre.<os>.mk`.
 
 ### 12.2c
-**Workarounds for current bmake-it issues** (to remove when bmake-it is fixed):
+**Workarounds for current bmake-it issues** (to remove when bmake-it is fixed; checked against bmake-it `main` at 21ab3c2):
 1. Imported link lists: bmake-it records pkg-config's `--static` list minus the library's own `-L` directory, so the transitive libraries can't be found. GDAL is therefore resolved with `IMPORT_PREFIX=/opt/local` in `GIS/libgdal.m/mk/pre.macos.mk` (its link line is then just `-lgdal`, which is all a shared library needs).
-2. `IMPORT=fetch:` (compiled by bmake-it) doesn't create `obj/` subdirectories for `SRCS` in subdirectories of the fetched tree, and doesn't put the tree's root on the include path: `GUI/libimgui.m/mk/local.mk`.
-3. `FETCH_BUILD=`: a dependency's install prefix isn't passed to the upstream build, so `GIS/libcopc.m` sets `CMAKE_PREFIX_PATH` itself; and the module's own consumer-side flags (`-l<LIBS>`, `-D<LIB>_BUILDING`, invalid for `LIB=copc-lib`) leak into the upstream build's environment, which `GIS/libcopc.m/mk/local.mk` strips.
+2. `IMPORT=fetch:` (compiled by bmake-it) doesn't put the fetched tree's root on the include path when compiling its own sources: `GUI/libimgui.m/mk/local.mk` adds it (ImGui's backends include `imgui.h` from the root). Without it, a build only succeeds when `imgui.h` was already staged by an earlier one.
 
 Not worked around:
 - a static library's transitive `-l` flags reach consumers without their library directory (harmless here: the Viewer lists `GIS`);
-- every build recompiles an `IMPORT=fetch:` module (ImGui);
-- upstream CMake builds target the host's macOS version (26.6) while bmake-it links for 26.0 (linker warnings; the deployment target isn't passed);
-- **a program isn't relinked when a static library it links from another framework changes** (`libgeo.a` → `lasviewer`): remove the program binary, or `bmake clean`, after changing `Geo`.
+- a build with nothing to do still re-archives and re-stages: `libimgui.a` and `libgeo.a` are rebuilt, with copy-up collision warnings, and an incremental build takes about 45 s.
+
+Fixed in bmake-it 21ab3c2, workarounds removed: `obj/` subdirectories for fetched `SRCS`; a dependency's install prefix passed to `FETCH_BUILD=` (`CMAKE_PREFIX_PATH`); consumer flags no longer leaking into it; the macOS deployment target; relinking a program when a library from another framework changes.
 
 ### 12.2d
 **Prerequisites versus fetched modules.** A dependency that can be downloaded from one single source (a release archive) for every supported platform is a fetched module, built by bmake-it. Anything else is a **prerequisite**, installed with the platform's own package manager before building, all from one source (no mixing of package managers). Today: GDAL, GLFW, glm and the OpenMP runtime are prerequisites; laz-perf, copc-lib and Dear ImGui are fetched. README → Prerequisites lists the package names per platform.
