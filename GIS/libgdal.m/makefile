@@ -1,5 +1,6 @@
 LIB=gdal
 IMPORT=pkg:gdal
+REQUIRES=gdal
 # GDAL installs its headers loose in the prefix's include/ (no gdal/
 # subdirectory), so every header lasviewer's code reaches is listed: the
 # ones it includes (cpl_conv.h cpl_string.h gdal_priv.h gdal_utils.h

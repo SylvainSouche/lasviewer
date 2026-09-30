@@ -1,8 +1,3 @@
-.build/
-/lasviewer
-/lasviewer-debug
-/lasviewer.tar.gz
-/docs/html/
 .DS_Store
 # bmake-it outputs
 build/
@@ -12,6 +7,9 @@ test-report/
 .gen-mod-order.mk
 .gen-fw-order.mk
 .depend
+# bmake docs: per-framework Doxygen output and the workspace landing page
+/*/docs/
+/docs/index.html
 # bmake-it fetch: downloaded archives and extracted work trees
 distfiles/
 work/

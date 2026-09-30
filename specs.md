@@ -33,7 +33,7 @@ Math library: **glm** (header-only).
 UI and on-screen text: **Dear ImGui** (v1.91.9b, MIT; core + GLFW and OpenGL3 backends), fetched from its release tag and compiled by the build (§12.2). It replaced the FreeType glyph-atlas text renderer, so FreeType is no longer a dependency.
 
 ### 1.7
-Build system: **bmake-it** (BSD make; https://github.com/SylvainSouche/bmake-it). The repository is a bmake-it workspace; see §12. A plain GNU `GNUmakefile` building the same binary from the same tree is kept temporarily for comparison.
+Build system: **bmake-it** (BSD make; https://github.com/SylvainSouche/bmake-it). The repository is a bmake-it workspace; see §12.
 
 ### 1.8
 Package manager: **MacPorts** (`/opt/local`) on macOS. Homebrew and Linux system packages also supported.
@@ -415,10 +415,10 @@ Not worked around:
 Fixed in bmake-it 21ab3c2, workarounds removed: `obj/` subdirectories for fetched `SRCS`; a dependency's install prefix passed to `FETCH_BUILD=` (`CMAKE_PREFIX_PATH`); consumer flags no longer leaking into it; the macOS deployment target; relinking a program when a library from another framework changes.
 
 ### 12.2d
-**Prerequisites versus fetched modules.** A dependency that can be downloaded from one single source (a release archive) for every supported platform is a fetched module, built by bmake-it. Anything else is a **prerequisite**, installed with the platform's own package manager before building, all from one source (no mixing of package managers). Today: GDAL, GLFW, glm and the OpenMP runtime are prerequisites; laz-perf, copc-lib and Dear ImGui are fetched. README → Prerequisites lists the package names per platform.
+**Prerequisites versus fetched modules.** A dependency that can be downloaded from one single source (a release archive) for every supported platform is a fetched module, built by bmake-it. Anything else is a **prerequisite**, installed with the platform's own package manager before building, all from one source (no mixing of package managers). Today: GDAL, GLFW, glm and the OpenMP runtime are prerequisites; laz-perf, copc-lib and Dear ImGui are fetched. README → Prerequisites lists the package names per platform. Modules declare what they check with `REQUIRES=` (bmake-it: `pkg-config --exists`, else `command -v`): `gdal` and `glfw3` on their import modules, `cmake` on the two CMake-built ones. glm has no pkg-config file and no command, so it can't be declared this way; it is found through its `mk/pre.<os>.mk` hook.
 
 ### 12.3
-`bmake test` builds and runs the atf-c++ tests with Kyua: `Geo/libgeo.m/tests/{raster_test,las_test}.cpp` (linked against `libgeo.a`) and `Viewer/lasviewer.m/tests/{basic_test,scene_test}.cpp` (linked against the viewer's objects except `main.o`). JUnit results go to `build/<key>/runs/<run>/test-results.xml` in each module.
+`bmake test` builds and runs the atf-c++ tests with Kyua: `Geo/libgeo.m/tests/{raster_test,las_test,height_model_test}.cpp` (linked against `libgeo.a`) and `Viewer/lasviewer.m/tests/{basic_test,scene_test}.cpp` (linked against the viewer's objects except `main.o`). JUnit results go to `build/<key>/runs/<run>/test-results.xml` in each module; `REPORT=yes` adds a Kyua HTML report. `SANITIZE=address` builds everything with AddressSanitizer (the tests and a MNT + MNH + COPC scene ran clean with it on 2026-09-30).
 
 ### 12.4
 `.clang-tidy` config: bugprone-*, cert-*, misc-*, modernize-*, performance-*, readability-* checks. Magic numbers and identifier length suppressed.
@@ -427,7 +427,7 @@ Fixed in bmake-it 21ab3c2, workarounds removed: `obj/` subdirectories for fetche
 `.clang-format` config: LLVM base, C++17, 100-column limit, 4-space indent, attached braces.
 
 ### 12.6
-`docs/Doxyfile` for Doxygen documentation generation.
+`bmake docs` generates Doxygen HTML per framework from its public `include/` (`<fw>/docs/html/`, git-ignored), plus a workspace page `docs/index.html`. Only `Geo` has public headers of its own; `Viewer`'s are framework-local, so its page is empty.
 
 ---
 

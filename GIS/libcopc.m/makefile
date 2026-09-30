@@ -7,6 +7,7 @@ LIB=copc-lib
 IMPORT=fetch:copc-lib
 FETCH_URL=https://github.com/RockRobotic/copc-lib/archive/refs/tags/v2.6.3.tar.gz
 FETCH_BUILD=cmake
+REQUIRES=cmake
 FETCH_BUILD_ARGS=-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DWITH_TESTS=OFF \
     -DWITH_PYTHON=OFF
 IMPORT_HEADERS=copc-lib

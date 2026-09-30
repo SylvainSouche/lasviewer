@@ -53,7 +53,7 @@ sh bmake-it/scripts/install-env.sh      # adds MAKESYSPATH to your shell rc; or:
 export MAKESYSPATH=/path/to/bmake-it/mk:/opt/local/share/mk
 ```
 
-Use a bmake-it that includes `IMPORT=fetch:` (merged into its `main`, PR #2).
+Use bmake-it `main` at 21ab3c2 or later (fetched CMake builds, `REQUIRES=`). A missing prerequisite stops the build at once with its name (`REQUIRES=` in the module makefiles).
 
 ### Build
 
@@ -137,7 +137,10 @@ The build is [bmake-it](https://github.com/SylvainSouche/bmake-it): a workspace 
 
 ```bash
 bmake                 # build everything for the host (build/<os>-<arch>/)
-bmake test            # atf-c++ tests via Kyua (raster_test, basic_test, scene_test)
+bmake test            # atf-c++ tests via Kyua (Geo: raster, las, height_model; Viewer: basic, scene)
+bmake test REPORT=yes # same, plus a Kyua HTML report (path printed at the end)
+bmake SANITIZE=address && bmake test SANITIZE=address   # AddressSanitizer build
+bmake docs            # Doxygen for each framework's public headers → <fw>/docs/html
 bmake clean
 bmake help
 cd Geo && bmake       # build / test one framework (or one module: cd Geo/libgeo.m)
@@ -153,8 +156,6 @@ cd Geo && bmake       # build / test one framework (or one module: cd Geo/libgeo
 Headers follow bmake-it's visibility rules: `<fw>/include/` is public (reached through `PREREQS=`), `<fw>/local/include/` is shared by that framework's modules, `<module>/include/` is private.
 
 Per-target settings live in `mk/` hook files next to the module, for example `Viewer/lasviewer.m/mk/local.macos.mk` (OpenGL frameworks) or `GIS/libglm.m/mk/pre.macos.mk` (where glm's headers are).
-
-`GNUmakefile` (plain GNU make, `make build`) builds the same binary from the same tree; it is kept temporarily, for comparison.
 
 `--snapshot out.ppm` renders until every layer has finished loading, saves the frame, and exits. It's useful for scripted visual checks. `--view x,y,z,distance,yaw,pitch` sets the starting view: world point in the scene CRS, distance in meters, angles in degrees.
 
@@ -188,7 +189,7 @@ Viewer/
     shaders.cpp              embedded GLSL + compile/link helpers
     log_capture.cpp          std::cerr → in-app log (thread-safe)
   lasviewer.m/tests/         basic_test.cpp (formulas), scene_test.cpp (frame + camera)
-docs/                        design notes (DEM tessellation), Doxyfile
+docs/                        design notes (DEM tessellation)
 ```
 
 **Loading.** The scene first reads every input's header (LAS header and CRS records; GDAL for rasters), picks the scene CRS, expresses every extent in it, and fixes one `SceneFrame` from their union:
