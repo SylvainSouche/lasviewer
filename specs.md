@@ -404,15 +404,59 @@ Output: `build/<os>-<arch>/bin/lasviewer` at the workspace root (e.g. `build/mac
 Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/lasviewer.m/mk/local.macos.mk` (`-framework OpenGL Cocoa IOKit`), `local.linux.mk` (`-lGL`), `GIS/libglm.m/mk/pre.<os>.mk`.
 
 ### 12.2c
-**Workarounds for current bmake-it issues** (to remove when bmake-it is fixed; checked against bmake-it `main` at 21ab3c2):
-1. Imported link lists: bmake-it records pkg-config's `--static` list minus the library's own `-L` directory, so the transitive libraries can't be found. GDAL is therefore resolved with `IMPORT_PREFIX=/opt/local` in `GIS/libgdal.m/mk/pre.macos.mk` (its link line is then just `-lgdal`, which is all a shared library needs).
-2. `IMPORT=fetch:` (compiled by bmake-it) doesn't put the fetched tree's root on the include path when compiling its own sources: `GUI/libimgui.m/mk/local.mk` adds it (ImGui's backends include `imgui.h` from the root). Without it, a build only succeeds when `imgui.h` was already staged by an earlier one.
+**bmake-it restrictions and how lasviewer works around them.** Checked against bmake-it `main` at 21ab3c2 (2026-09-30). For each one: what goes wrong, why, the workaround and what it costs, and how to check that a bmake-it fix makes the workaround removable. Removing a workaround is the acceptance test: delete the file or line, then run `bmake` from a clean tree (`bmake clean`, or delete every `build/` and `work/`). An incremental build can hide a regression (§12.2c-2).
 
-Not worked around:
-- a static library's transitive `-l` flags reach consumers without their library directory (harmless here: the Viewer lists `GIS`);
-- a build with nothing to do still re-archives and re-stages: `libimgui.a` and `libgeo.a` are rebuilt, with copy-up collision warnings, and an incremental build takes about 45 s.
+**Workarounds in place**
 
-Fixed in bmake-it 21ab3c2, workarounds removed: `obj/` subdirectories for fetched `SRCS`; a dependency's install prefix passed to `FETCH_BUILD=` (`CMAKE_PREFIX_PATH`); consumer flags no longer leaking into it; the macOS deployment target; relinking a program when a library from another framework changes.
+1. **GDAL's imported link list** (`GIS/libgdal.m/mk/pre.macos.mk`: `IMPORT_PREFIX=/opt/local`).
+   - *Symptom without it:* the program link fails with `ld: library 'lz4' not found`.
+   - *Cause:* with `IMPORT=pkg:gdal`, bmake-it records `pkg-config --libs --static gdal`, about 35 libraries (`-llz4 -lcurl -lproj -lgeos_c.1.20.5 -lspatialite …`), and drops the `-L/opt/local/lib` they all live in. It keeps only package-internal directories such as `-L/opt/local/lib/proj9/lib`.
+   - *Why the workaround works:* the prefix form resolves GDAL to `-L/opt/local/lib -lgdal`. Linking a shared library needs nothing more, since the dylib records its own dependencies.
+   - *Cost:*
+     - the prefix is hard-coded to MacPorts, so a Homebrew (`/opt/homebrew`) or pkgsrc (`/opt/pkg`) host has to edit the hook;
+     - Linux has no such hook; there the pkg-config list is used as is, and the problem has not been checked there.
+   - *Tried:* removing the hook on 2026-09-30. It still fails the same way.
+   - *Remove when:* bmake-it keeps the `-L` entries, or records only `-l<LIB>` for a shared import.
+2. **Include path of a fetched, compiled source tree** (`GUI/libimgui.m/mk/local.mk`: `CXXFLAGS += -I${.CURDIR}/work/_resolved`).
+   - *Symptom without it:* `imgui_impl_glfw.cpp:90: fatal error: 'imgui.h' file not found`.
+   - *Cause:* with `IMPORT=fetch:` and `SRCS=`, bmake-it compiles the fetched files without the archive's root on the include path. ImGui's `backends/*.cpp` include `"imgui.h"` from that root.
+   - *Trap:* the error only appears on a fresh tree. Once a build has staged `imgui.h` into `GUI/build/<key>/include/`, the backends find it there. Removing the workaround from an incremental build "works", and that was my first, wrong conclusion.
+   - *Tried:* removing it in an incremental build (passed, misleadingly), then on a fresh `GUI` framework (failed).
+   - *Remove when:* the fetched root (or `WRKSRC`) is on the include path of the module's own compiles. Test from a fresh tree.
+3. **glm, a header-only library** (`GIS/libglm.m/mk/pre.macos.mk` and `pre.linux.mk`: `IMPORT_CFLAGS=-I…`).
+   - *Cause:*
+     - glm has no pkg-config file, so `IMPORT=pkg:glm` can't resolve it through pkg-config;
+     - bmake-it has no header-only import form;
+     - `REQUIRES=glm` can't express it either: it checks only pkg-config or a command on `PATH` (`REQUIRES=glm: not found via pkg-config or on PATH`).
+   - *Tried:* removing the macOS hook. The build passed: bmake-it's last resolution step probes the tool prefixes for `lib<LIB>.{a,so,dylib}` and found `/opt/local/lib/libglm.dylib`. That's a coincidence: MacPorts' glm 1.0.3 ships an optional compiled library. A header-only glm (Debian's `libglm-dev`, for instance) has no such file and would not be found. Kept the hook.
+   - *Cost:* every build prints `no resolved library directory … skipping libglm.* staging`; the hook lists the candidate include directories by hand.
+   - *Remove when:* bmake-it has a header-only import (e.g. `IMPORT_LIB=none`) and a header check for `REQUIRES=` (e.g. `header:glm/glm.hpp`).
+4. **GDAL's header list** (`GIS/libgdal.m/makefile`: 49 headers listed in `IMPORT_HEADERS`).
+   - *Cause:* GDAL installs about 150 headers loose in `include/`, and `IMPORT_HEADERS=` takes exact names, no globs. The list is the header closure of what lasviewer includes; the regeneration command is in the makefile's comments.
+   - *Cost:* a new GDAL header reached by a future `#include` fails until it is added to the list.
+   - *Remove when:* `IMPORT_HEADERS` accepts globs (`gdal*.h cpl_*.h ogr_*.h`).
+
+**Restrictions not worked around (they cost time or noise, not correctness)**
+- *Builds with nothing to do aren't no-ops.* `libimgui.a` and `libgeo.a` are re-archived, headers are re-staged, and `copy-up collision: 'libimgui.a' differs …` warnings appear. Touching one `Geo` file costs about 45 s.
+- *Transitive `-l` without `-L`.* `libgeo.a`'s link dependencies (`-lgdal`, `-lcopc-lib`, …) reach the Viewer without their library directory. It works only because the Viewer lists `GIS` in `PREREQS`, which adds that directory.
+- *Link warnings.*
+  - `ignoring duplicate libraries: '-lcopc-lib', '-lglfw', '-llazperf'`: dependency lists are expanded more than once.
+  - `search path '<Viewer>/build/<key>/lib' not found`: a framework that builds only a program still gets a `-L` for its own `lib/`.
+- *`bmake docs`.*
+  - The workspace page is written to `docs/index.html`, i.e. inside lasviewer's own hand-written `docs/` (git-ignored here).
+  - `Viewer` has no public headers, so its page is empty and Doxygen warns (`INPUT … does not exist`, `No files to be processed`).
+  - `GIS` and `GUI` produce pages for imported headers, of no use.
+- *Stale bmake-it README.* It documents `bmake test-all`, which no longer exists (`don't know how to make test-all`); the HTML report is now `bmake test REPORT=yes`.
+- *Fetched upstream builds can't be cross-compiled* (`FETCH_BUILD=cmake` drops cross flags). Cross-compiling is out of scope for lasviewer for now.
+
+**Resolved in bmake-it, workarounds removed**
+- *In 7ad19d9 (macOS):* imported dylibs were staged as dangling symlinks (`libgdal.dylib` → a version not copied); every consumer failed with "prerequisite library … has not been built yet".
+- *In 21ab3c2:*
+  - `FETCH_BUILD=` leaked the consumer's `-l<LIBS>` into CMake (breaking its compiler check) and an invalid `-DCOPC-LIB_BUILDING`; `GIS/libcopc.m/mk/local.mk` used to strip them;
+  - no dependency prefix reached CMake, so `GIS/libcopc.m` set `CMAKE_PREFIX_PATH` itself to find laz-perf;
+  - no `obj/backends/` directory existed for ImGui's nested sources; a `.PHONY` mkdir rule created it;
+  - the macOS deployment target wasn't passed (linker warnings: libraries built for 26.6, program for 26.0);
+  - **a program wasn't relinked when a library of another framework changed.** This silently ran a stale `lasviewer` during the PDAL migration, and the old workaround was to delete the binary by hand.
 
 ### 12.2d
 **Prerequisites versus fetched modules.** A dependency that can be downloaded from one single source (a release archive) for every supported platform is a fetched module, built by bmake-it. Anything else is a **prerequisite**, installed with the platform's own package manager before building, all from one source (no mixing of package managers). Today: GDAL, GLFW, glm and the OpenMP runtime are prerequisites; laz-perf, copc-lib and Dear ImGui are fetched. README → Prerequisites lists the package names per platform. Modules declare what they check with `REQUIRES=` (bmake-it: `pkg-config --exists`, else `command -v`): `gdal` and `glfw3` on their import modules, `cmake` on the two CMake-built ones. glm has no pkg-config file and no command, so it can't be declared this way; it is found through its `mk/pre.<os>.mk` hook.
