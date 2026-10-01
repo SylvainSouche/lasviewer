@@ -9,7 +9,6 @@ test-report/
 .depend
 # bmake docs: per-framework Doxygen output and the workspace landing page
 /*/docs/
-/docs/index.html
 # bmake-it fetch: downloaded archives and extracted work trees
 distfiles/
 work/

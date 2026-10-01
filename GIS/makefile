@@ -2,5 +2,6 @@
 # copc-lib (libcopc.m). Imported from the system: GDAL (libgdal.m).
 # Header-only: glm (libglm.m).
 PREREQS=
+DOCS=no
 PUBLIC_HEADERS_SYSTEM=yes
 .include "mk.framework.mk"

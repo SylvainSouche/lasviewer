@@ -53,7 +53,7 @@ sh bmake-it/scripts/install-env.sh      # adds MAKESYSPATH to your shell rc; or:
 export MAKESYSPATH=/path/to/bmake-it/mk:/opt/local/share/mk
 ```
 
-Use bmake-it `main` at 21ab3c2 or later (fetched CMake builds, `REQUIRES=`). A missing prerequisite stops the build at once with its name (`REQUIRES=` in the module makefiles).
+Use bmake-it `main` at 173f44a or later (`IMPORT_LIB=none`, header patterns, `DOCS=no`). A missing prerequisite stops the build at once with its name (`REQUIRES=` in the module makefiles).
 
 ### Build
 
@@ -140,7 +140,7 @@ bmake                 # build everything for the host (build/<os>-<arch>/)
 bmake test            # atf-c++ tests via Kyua (Geo: raster, las, height_model; Viewer: basic, scene)
 bmake test REPORT=yes # same, plus a Kyua HTML report (path printed at the end)
 bmake SANITIZE=address && bmake test SANITIZE=address   # AddressSanitizer build
-bmake docs            # Doxygen for each framework's public headers → <fw>/docs/html
+bmake docs            # Doxygen for Geo's public headers → Geo/docs/html (index: build/docs/)
 bmake clean
 bmake help
 cd Geo && bmake       # build / test one framework (or one module: cd Geo/libgeo.m)
@@ -155,7 +155,7 @@ cd Geo && bmake       # build / test one framework (or one module: cd Geo/libgeo
 
 Headers follow bmake-it's visibility rules: `<fw>/include/` is public (reached through `PREREQS=`), `<fw>/local/include/` is shared by that framework's modules, `<module>/include/` is private.
 
-Per-target settings live in `mk/` hook files next to the module, for example `Viewer/lasviewer.m/mk/local.macos.mk` (OpenGL frameworks) or `GIS/libglm.m/mk/pre.macos.mk` (where glm's headers are).
+Per-target settings live in `mk/` hook files next to the module, for example `Viewer/lasviewer.m/mk/pre.macos.mk` (OpenGL frameworks) or `pre.linux.mk` (`-lGL`).
 
 `--snapshot out.ppm` renders until every layer has finished loading, saves the frame, and exits. It's useful for scripted visual checks. `--view x,y,z,distance,yaw,pitch` sets the starting view: world point in the scene CRS, distance in meters, angles in degrees.
 
