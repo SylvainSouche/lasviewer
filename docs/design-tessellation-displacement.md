@@ -1,8 +1,9 @@
 # Design: Hybrid Tessellation + Normal-Displacement for DEM/DSM Meshes
 
-Status: **implemented, UNVERIFIED ON REAL GPU HARDWARE** (this sandbox has
-no GPU/GLFW/PDAL/libtiff — see the banner comment at the top of
-`src/dem_tess_mesh.cpp`). Sections below are updated inline where the
+Status: **implemented and checked on an Apple GPU (GL 4.1) as of §6v**
+(2026-10). The current design is summarized in §6v and `specs.md` §9.7;
+the sections before it are the history of how it got there, several of
+them superseded (each says so). Sections below are updated inline where the
 implementation deviated from the original draft (search "IMPLEMENTED" /
 "Deviation"). Companion to `specs.md` — once verified on real hardware, the
 relevant points here should be folded into `specs.md` §9 (Rendering) as new
@@ -1085,7 +1086,7 @@ completed), `FAILED` (I/O or other error). Previously these were less
 consistently distinguished (a single "starting..." and a single "ready,
 swapped in" message, with no distinct abort/failure wording).
 
-### 6o. Whether the collapsing angle "really works" — a diagnostic, and an honest hypothesis (implemented: histogram logging; not implemented: a fix, because none is confirmed necessary)
+### 6o. Whether the collapsing angle "really works" — ANSWERED in §6v: it did not (the test measured the cell's elevation range, so every sloped cell failed); fixed there — a diagnostic, and an honest hypothesis (implemented: histogram logging; not implemented: a fix, because none is confirmed necessary)
 
 Raised as a direct doubt after §6e's fix (which corrected a real bug: the
 normal-variation criterion dominating independently of the user-controlled
@@ -1349,7 +1350,7 @@ No new unit test — the overlap-check math itself is unchanged (confirmed
 correct on inspection, twice), this is a policy/wiring change (what
 happens once "no overlap" is determined), not a new formula.
 
-### 6s. Along-normal displacement replaced with direct vertical correction — the along-normal approach was never the right technique (implemented — supersedes §6f-6h)
+### 6s. Along-normal displacement replaced with direct vertical correction — the along-normal approach was never the right technique (implemented — supersedes §6f-6h; its "vertices exactly on the DEM" claim only became true in §6v, which removed the edge-vanishing blend)
 
 Raised directly, and correctly: *"if i have a triangle, the triangles
 vertices must sit at the dem provided altitude. what is acceptable is to
@@ -1435,7 +1436,7 @@ true heightmap value exactly regardless of slope, and explicitly computes
 what the old formula would have given for the same inputs to demonstrate
 that it fell meaningfully short on steep terrain.
 
-### 6t. Back to top-down subdivision — fixed at the root cause this time, plus OpenMP (implemented — supersedes §6k)
+### 6t. Back to top-down subdivision — fixed at the root cause this time, plus OpenMP (implemented — supersedes §6k; its min/max bound replaced by an exact deviation in §6v)
 
 A three-part conversation led here, worth recording in order since each
 part changed the conclusion:
@@ -1637,6 +1638,97 @@ visually accurate on real hardware, are both unconfirmed. Also not
 implemented: resolving custom (non-EPSG-catalogued) CRS definitions via
 `GeoDoubleParamsTag`/`GeoAsciiParamsTag` — flagged as a known, narrower
 gap in `readEPSGCode()`'s own comment, not silently unhandled.
+
+### 6v. Level of detail and displacement, reviewed and fixed (implemented 2026-10 — supersedes the quadtree test of §6t, the constrained-edge rule of §5.1, and the blend weight kept from §6g)
+
+A review of what the code did against what this document intended found
+five problems. Each was measured or reproduced before fixing.
+
+1. **The adaptive quadtree did not adapt.** Every leaf ended at the maximum
+   level (`L5=65140` on a 2000×2000 MNT, with or without orthophoto). §6t's
+   "safe bound" `max(trueMax − planeMin, planeMax − trueMin)` is the cell's
+   elevation *range*, not its deviation from the patch: on a tilted plane
+   it equals the whole rise across the cell. Against a 1° tolerance
+   (3.4 cm for a 3.9 m cell) any slope above about 1 % failed. This is the
+   answer to §6o: the collapse angle had no effect.
+   **Fix:** the exact deviation `max |DEM − bilinear patch|` over every
+   pixel of the cell (`cellDeviation`, one pass over the cell's pixels;
+   with top-down early termination, at most one pass over the raster per
+   level). The normal-variation criterion (it fed the along-normal
+   displacement removed in §6s) and the texture-span criterion (UVs are
+   interpolated exactly, so it bought nothing) are gone. A new criterion
+   caps a cell at 64 pixels across, so the GPU's 64 segments per edge can
+   still reach every DEM pixel. Result: 1° → 230k leaves, 5° → 166k,
+   20° → 24k at max level 6 on the same MNT; a plane of any slope stays at
+   level 0.
+2. **Balancing and edge classification were quadratic.** Both found a
+   neighbour by scanning every leaf: 6.7 s of a 7.4 s build. Balancing also
+   only probed edge midpoints, which cannot guarantee one-level balance
+   along a whole edge. **Fix:** `LeafIndex`, a hash of (level, ix, iy), so a
+   lookup is O(maxLevel); balance checks every finest-level cell along each
+   edge. The build now takes about 0.1 s.
+3. **Generated vertices did not sit on the DEM.** The TES used
+   `mix(linear, heightmap, 16u(1−u)v(1−v))`: exact only at the patch
+   centre, 44 % linear a quarter of the way in, fully linear on edges. The
+   weight came from §6g (crack-freedom for along-normal displacement and
+   downsampled corners). **Fix:** every vertex takes its height from the
+   heightmap. Same-level edges stay watertight because both patches
+   generate the same vertices and sample the same texels.
+4. **Level transitions would crack.** §5.1 gave both sides of a transition
+   the same level K: the coarse edge got K segments, the two fine half edges
+   K each (2K in total). The fine side's middle corner is a DEM sample, the
+   coarse side's edge a straight line there: a T-junction crack as large as
+   the deviation that caused the split. Invisible only because finding 1
+   kept every leaf at the same level. **Fix:** edges are coded free / finer
+   side / coarser side; the coarse side splits into 2K, each fine half
+   edge into K, so every vertex exists on both sides, at the same place
+   and sampled from the same texels.
+5. **Heightmap sampling was off by up to half a pixel.** UVs were
+   `col / (w − 1)`; texel centres are at `(col + 0.5) / w` (0 error at the
+   DEM's centre, ±0.5 px at its edges). The orthophoto UVs had the same
+   offset. **Fix:** pixel centres map to texel centres for both.
+
+Two more things surfaced while fixing these:
+
+6. **Nodata pulled vertices down to 0 m.** The heightmap stored nodata as
+   0 m. With full displacement, vertices of patches at the data's edge
+   hung "curtains" down to sea level (the old blend had mostly hidden it).
+   The elevation-ramp range was polluted the same way (corners at 0 m), so
+   the colours were compressed. **Fix:** nodata texels are filled with the
+   nearest valid height (`fillNodataNearest`, breadth-first) and the
+   heightmap became RG32F with a validity channel; the fragment shader
+   discards where validity < 0.5, cutting the surface exactly at the data's
+   edge.
+7. **The DEM was unlit.** **Added:** hill-shading in the fragment shader from
+   the heightmap gradient (light NW, 45°; flat ground unchanged), per layer,
+   on by default.
+
+Also: the TCS caps each edge's segments at the DEM pixels it spans
+(beyond one vertex per pixel there is nothing new to sample), and
+`--dem-lod angle,level` sets the collapse angle and maximum level from the
+command line.
+
+**Verification.**
+- `dem_test` (10 cases, on the real code):
+  - a plane has zero deviation and stays coarse at any slope;
+  - a single raised pixel is found exactly;
+  - a spike subdivides only locally;
+  - the patch count falls monotonically with the angle;
+  - balance holds over the whole finest grid, and the leaves tile it exactly;
+  - edge codes agree across every edge (0/0, 2/1);
+  - the 2K:K vertex sets coincide;
+  - `LeafIndex` lookups;
+  - nodata fill;
+  - a 2000×2000 build in under 3 s, with UVs on texel centres.
+- **Cracks on the GPU:** rendered from *below* the terrain looking up, any
+  background pixel enclosed by surface is a hole through the mesh. On the
+  gap-filled MNT at a 20° collapse angle (large coarse patches, many
+  transitions), 6 views had 0 holes. As a control, the old 1:1 transition
+  rule gave holes in 5 of the 6 views (70 pixels), so the test does see
+  cracks.
+
+The tests that mirrored removed mechanisms (normals, blend weight, density
+mip, normal threshold, min/max pyramid) were deleted from `basic_test`.
 
 ## 7. Fallback path (no GL 4.0/4.1)
 

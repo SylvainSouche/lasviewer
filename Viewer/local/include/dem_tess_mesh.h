@@ -3,19 +3,21 @@
 // Requires an OpenGL 4.0+ context (tessellation shaders); macOS provides 4.1
 // core. Design and rationale: docs/design-tessellation-displacement.md.
 //
-// Summary:
-//   - The CPU builds an adaptive quadtree over the DEM (subdivide by angular
-//     geometric error + texture span, balance pass so adjacent leaves differ
-//     by at most one level) and emits one GL_PATCHES quad per leaf.
+// Summary (design doc §6v):
+//   - The CPU builds an adaptive quadtree over the DEM (dem_quadtree.h): a
+//     cell stays whole when the flat patch through its corners is within the
+//     collapse angle of every DEM pixel inside it and spans at most 64
+//     pixels; leaves are balanced to one level apart along whole edges and
+//     emitted as one GL_PATCHES quad each, with per-edge codes.
 //   - Cells entirely nodata produce no patch; cells straddling a nodata edge
-//     are subdivided further to localize it.
-//   - Crack avoidance: edges shared with a same-level neighbor use the
-//     continuous screen-space tessellation formula (both sides compute
-//     identical values); edges at a ±1 level transition use a fixed,
-//     level-derived tessellation level.
-//   - The full-resolution heightmap is uploaded as an R32F texture holding
-//     GL-space Y; the evaluation shader replaces each generated vertex's
-//     interpolated height with the sampled one (patch corners are exact).
+//     are subdivided down to the maximum level.
+//   - GPU tessellation splits edges by on-screen length, capped at the DEM
+//     pixels they span; at a level transition the coarse side uses twice the
+//     segments of each fine half edge, so the two sides share every vertex.
+//   - The heightmap is an RG32F texture: GL-space heights (nodata filled
+//     with the nearest valid height) and validity. Every generated vertex
+//     takes its height from it, so it sits on the DEM; the fragment shader
+//     discards nodata and can hill-shade from its gradient.
 //   - Two UV sets: patchUVs (orthophoto-relative, for color) and
 //     patchHeightUVs (DEM-raster-relative, for the heightmap). The ortho and
 //     DEM generally cover different extents, so they must not be conflated.
@@ -60,6 +62,7 @@ struct DemStyle {
     float opacity = 1.0f;   // < 1: blended (the caller sets the blend state)
     DemAux auxMode = DemAux::None;
     float threshold = 0.0f; // meters, see DemAux
+    bool shade = true;      // hill-shading from the heightmap gradient
 };
 
 // True if the current GL context supports tessellation shaders (GL >= 4.0).
@@ -80,8 +83,11 @@ struct DEMTessMesh {
     // Heightmap in GL-space Y, and the auxiliary raster (meters, same grid),
     // kept only until uploadGPU().
     std::vector<float> heightmapGLSpace;
+    std::vector<float> heightmapValid; // 1 = data, 0 = nodata (filled)
     std::vector<float> auxData;
     int heightmapSrcW = 0, heightmapSrcH = 0;
+    int heightmapTexW = 0, heightmapTexH = 0; // uploaded size (after any downsample)
+    double demPixelW = 1.0, demPixelH = 1.0;  // world size of one DEM pixel
 
     SceneFrame frame;
     glm::dvec3 bboxMin{0.0}, bboxMax{0.0};
@@ -119,6 +125,7 @@ struct DEMTessMesh {
 
     // Box-filter downsample to capTexels if needed, then (re)upload.
     bool uploadHeightmapTexture(const std::vector<float>& glSpaceData,
+                                const std::vector<float>& validData,
                                 int srcW, int srcH, int capTexels);
     bool hasAux() const { return auxTex != 0; }
 

@@ -265,6 +265,9 @@ bool Scene::load(const LoadPlan& plan, const Programs& programs,
                                                 covers.empty() ? DemRole::Plain : DemRole::Ground,
                                                 covers.empty() ? "DEM" : "DTM");
         layer->epsg = d.info.epsg;
+        if (plan.demAngle > 0.0 || plan.demMaxLevel >= 0)
+            layer->setLod(plan.demAngle > 0.0 ? plan.demAngle : 1.0,
+                          plan.demMaxLevel >= 0 ? plan.demMaxLevel : 5);
         if (layer->load(frame)) {
             grounds[i] = layer.get();
             layers.push_back(std::move(layer));
@@ -293,6 +296,9 @@ bool Scene::load(const LoadPlan& plan, const Programs& programs,
         auto layer = std::make_unique<DemLayer>(a.path, ortho.get(), source,
                                                 DemRole::AboveGround, kindName(a.kind));
         layer->epsg = a.info.epsg;
+        if (plan.demAngle > 0.0 || plan.demMaxLevel >= 0)
+            layer->setLod(plan.demAngle > 0.0 ? plan.demAngle : 1.0,
+                          plan.demMaxLevel >= 0 ? plan.demMaxLevel : 5);
         if (layer->load(frame)) {
             grounds[a.ground]->addAboveLayer(layer.get());
             layers.push_back(std::move(layer));

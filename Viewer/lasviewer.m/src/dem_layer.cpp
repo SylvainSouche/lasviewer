@@ -47,6 +47,7 @@ void DemLayer::update(const RenderContext&) { mesh_.pollBackgroundBuild(ortho_);
 DemStyle DemLayer::style(const RenderContext& ctx) const {
     DemStyle st;
     st.opacity = opacity_;
+    st.shade = shade_;
     st.threshold = ctx.settings->heightThreshold;
     if (role_ == DemRole::AboveGround) {
         st.auxMode = DemAux::Ground;
@@ -119,6 +120,7 @@ void DemLayer::drawUI() {
     ImGui::Checkbox("Displace", &displacement_);
     ImGui::SameLine();
     ImGui::Checkbox("Patch edges", &masterEdges_);
+    ImGui::Checkbox("Shade", &shade_);
 }
 
 std::string DemLayer::status() const {

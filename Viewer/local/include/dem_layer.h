@@ -27,6 +27,12 @@ public:
     ~DemLayer() override;
 
     DemRole role() const { return role_; }
+    // Initial level-of-detail settings (before load()); the panel can still
+    // change them.
+    void setLod(double collapseAngleDeg, int maxLevel) {
+        collapseAngleDeg_ = static_cast<float>(collapseAngleDeg);
+        maxLevel_ = maxLevel;
+    }
     // Ground layers: an above-ground layer standing on this one. The ground
     // hides its orthophoto under objects only while one of them is visible.
     void addAboveLayer(const Layer* above) { above_.push_back(above); }
@@ -65,4 +71,5 @@ private:
     bool wireframe_ = false;
     bool displacement_ = true;
     bool masterEdges_ = false;
+    bool shade_ = true;
 };

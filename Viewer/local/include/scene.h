@@ -20,6 +20,10 @@ struct LoadPlan {
         AboveGroundKind kind;
     };
     std::vector<AboveGround> aboveGround;
+    // DEM level of detail at load: collapse angle (degrees) and maximum
+    // quadtree level; <= 0 / < 0 keep the defaults (1°, 5).
+    double demAngle = 0.0;
+    int demMaxLevel = -1;
     std::string ortho;               // optional GeoTIFF orthophoto
 };
 

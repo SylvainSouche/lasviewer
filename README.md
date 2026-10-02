@@ -15,7 +15,7 @@ A lightweight C++ viewer for **LAZ/LAS/COPC point clouds** and **GeoTIFF DEMs**,
 - **LAZ/LAS**: loaded in full through laz-perf (LAS 1.0–1.4, point formats 0–10), thinned on an XY grid to at most 2M points.
 - **COPC streaming**: each file is split into 8×8 tiles, loaded asynchronously, and refined based on how large each tile appears on screen (per-tile PCA/OBB). Tiles outside the view or behind closer geometry are skipped; occlusion comes from a scene-wide Hi-Z depth pyramid.
 - **Orthophoto coloring**: points sample a GeoTIFF orthophoto, which must cover at least 25% of the cloud and use the same CRS. The colors can be switched between the orthophoto and elevation (or the file's RGB) at any time.
-- **DEM/DSM terrain**: an adaptive quadtree of GPU-tessellated patches with height displacement, textured by the orthophoto. Supports any raster GDAL reads (Float/Int elevation, IGN Terrain-RGB), with its declared nodata value.
+- **DEM/DSM terrain**: an adaptive quadtree of GPU-tessellated patches (coarse where the terrain is smooth, refined on screen down to one vertex per DEM pixel, crack-free), every vertex on the DEM, textured by the orthophoto, with optional hill-shading. Supports any raster GDAL reads (Float/Int elevation, IGN Terrain-RGB), with its declared nodata value.
 - **Terrain + what stands on it** (IGN LiDAR HD MNT + MNH, or MNT + MNS): the height model is drawn semi-transparent over the terrain, only where it rises above a height threshold (live slider, 0.5 m by default). The terrain underneath is left without orthophoto (neutral grey), since the image there shows the top of the building or tree.
 - **GPU depth subsampling**: gives an even screen-space point density.
 - **Navigation**: orbit, look-around, pan, fly, and double-click to focus. Perspective and orthographic projections, Z exaggeration.
@@ -157,7 +157,7 @@ Headers follow bmake-it's visibility rules: `<fw>/include/` is public (reached t
 
 Per-target settings live in `mk/` hook files next to the module, for example `Viewer/lasviewer.m/mk/local.macos.mk` (OpenGL frameworks) or `local.linux.mk` (`-lGL`).
 
-`--snapshot out.ppm` renders until every layer has finished loading, saves the frame, and exits. It's useful for scripted visual checks. `--view x,y,z,distance,yaw,pitch` sets the starting view: world point in the scene CRS, distance in meters, angles in degrees.
+`--snapshot out.ppm` renders until every layer has finished loading, saves the frame, and exits. It's useful for scripted visual checks. `--dem-lod angle,level` sets the DEM collapse angle and maximum quadtree level. `--view x,y,z,distance,yaw,pitch` sets the starting view: world point in the scene CRS, distance in meters, angles in degrees.
 
 ---
 

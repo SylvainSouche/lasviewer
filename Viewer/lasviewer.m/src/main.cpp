@@ -31,6 +31,8 @@ void printUsage(const char* prog) {
         << "  -dsm, -mns <f.tif> surface model, used like -dhm (height = DSM - DTM)\n"
         << "  -cop <cloud.laz>   add a point cloud explicitly\n"
         << "  --snapshot <f.ppm> save a frame once loading has settled, then quit\n"
+        << "  --dem-lod angle,level  DEM collapse angle (degrees, default 1) and maximum\n"
+        << "                     quadtree level (default 5) at load\n"
         << "  --view x,y,z,d,yaw,pitch\n"
         << "                     start looking at world point x,y,z (scene CRS) from d\n"
         << "                     meters away; yaw and pitch in degrees\n"
@@ -89,6 +91,14 @@ bool parseArgs(int argc, char** argv, LoadPlan& plan, std::string& snapshot, Ini
             const char* v = needValue();
             if (!v) return false;
             plan.clouds.push_back(v);
+        } else if (arg == "--dem-lod") {
+            const char* v = needValue();
+            if (!v) return false;
+            if (std::sscanf(v, "%lf,%d", &plan.demAngle, &plan.demMaxLevel) != 2 ||
+                plan.demAngle <= 0.0 || plan.demMaxLevel < 0 || plan.demMaxLevel > 10) {
+                std::cerr << "ERROR: --dem-lod needs angle,level (angle > 0, level 0..10)\n";
+                return false;
+            }
         } else if (arg == "--view") {
             const char* v = needValue();
             if (!v) return false;

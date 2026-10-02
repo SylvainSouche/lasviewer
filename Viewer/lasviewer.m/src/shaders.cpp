@@ -152,8 +152,33 @@ uniform sampler2D uAux;
 uniform float uThreshold;     // meters
 uniform float uFrameScale;    // GL unit -> meters
 uniform float uFrameCenterZ;  // meters at GL y = 0
+uniform sampler2D uHeightmap; // R: GL-space heights, G: validity (see uploadHeightmapTexture)
+uniform vec2 uHeightmapTexels;
+uniform vec2 uTexelGL;        // GL size of one heightmap texel along x and z
+uniform float uZScale;
+uniform int uShade;           // hill-shading on/off
+
+// Hill-shading from the heightmap gradient (light from the north-west, 45°
+// up), normalised so flat ground keeps its colour: 1 on the flat, darker on
+// slopes facing away, up to 1.3 on slopes facing the light.
+float hillshade() {
+    vec2 d = 1.0 / uHeightmapTexels;
+    float hL = texture(uHeightmap, vHeightUV - vec2(d.x, 0.0)).r;
+    float hR = texture(uHeightmap, vHeightUV + vec2(d.x, 0.0)).r;
+    float hN = texture(uHeightmap, vHeightUV - vec2(0.0, d.y)).r; // row - 1: north, -GL z
+    float hS = texture(uHeightmap, vHeightUV + vec2(0.0, d.y)).r;
+    float hx = (hR - hL) / (2.0 * uTexelGL.x) * uZScale;
+    float hz = (hS - hN) / (2.0 * uTexelGL.y) * uZScale;
+    vec3 n = normalize(vec3(-hx, 1.0, -hz));
+    const vec3 light = vec3(-0.5, 0.70710678, -0.5);
+    float lit = max(dot(n, light), 0.0) / 0.70710678;
+    return clamp(0.35 + 0.65 * lit, 0.0, 1.3);
+}
 
 void main() {
+    // No surface where the DEM has no data (heightmap G = validity; the
+    // heights there are only filled so that vertices stay level).
+    if (texture(uHeightmap, vHeightUV).g < 0.5) discard;
     bool covered = false;
     if (uAuxMode == 1) {
         float aboveGround = vElev * uFrameScale + uFrameCenterZ - texture(uAux, vHeightUV).r;
@@ -198,51 +223,33 @@ void main() {
             : mix(mid,  high, (t - 0.5) * 2.0);
         FragColor = vec4(c, uOpacity);
     }
+    if (uShade == 1) FragColor.rgb *= hillshade();
 }
 )GLSL";
 
 // ---------------------------------------------------------------------------
-// GPU-tessellated DEM mesh shaders (src/dem_tess_mesh.cpp).
+// GPU-tessellated DEM mesh shaders (src/dem_tess_mesh.cpp). Design and
+// history: docs/design-tessellation-displacement.md (§6v for this version).
 //
 // Pipeline: kMeshTessVert (passthrough, one invocation per patch corner)
-//        -> kMeshTessControl (TCS: per-edge tessellation level)
-//        -> kMeshTessEval (TES: bilinear-interpolates position/normal/UV,
-//           samples the heightmap, displaces along the interpolated normal)
-//        -> kMeshFrag
+//        -> kMeshTessControl (TCS: per-edge tessellation levels)
+//        -> kMeshTessEval (TES: bilinear position/UV within the patch, height
+//           sampled from the heightmap for every vertex)
+//        -> kMeshFrag (orthophoto or elevation ramp, hill-shading)
 //
-// SECOND REVISION — crack avoidance split by tessellation-level type, since
-// only OUTER (edge) levels can ever cause a crack; INNER (interior) is
-// entirely private to a patch and needs no cross-patch agreement, so it
-// stays fully free/view-dependent regardless of what the edges do. See
-// dem_tess_mesh.h's header banner and docs/design-tessellation-displacement.md
-// §4-5 for the full writeup of why the first revision (uniform patch grid)
-// was wrong, and why "free formula everywhere" doesn't work across patches
-// of different sizes.
-//   - Edge borders a SAME-level neighbor, or no neighbor (raster-domain
-//     boundary) — aEdgeConstraint component == 0: free continuous
-//     screen-space formula. Both patches sharing that edge independently
-//     compute identical corner endpoints (built from identical (col,row)
-//     inputs on the CPU), so they independently arrive at identical values
-//     — no coordination needed, this is the same determinism argument the
-//     first revision already had right.
-//   - Edge borders a DIFFERENT-level neighbor (LOD transition, capped at
-//     exactly ±1 level by DEMTessMesh::loadFromDEM()'s balance pass) —
-//     aEdgeConstraint component == 1: use uConstrainedEdgeTessLevel, a
-//     fixed constant BOTH the coarse patch and its finer neighbor's two
-//     half-edges use identically — two independently-computed CONTINUOUS
-//     estimates on differently-sized patches cannot be trusted to land on
-//     matching segment counts, but two uses of the SAME fixed constant
-//     trivially do.
+// Level of detail: the CPU quadtree (dem_quadtree.h) decides patch sizes;
+// the TCS splits each patch edge by its on-screen length (one segment per
+// uTargetPixelsPerSegment pixels), capped at the DEM pixels the edge spans.
 //
-// Requires GL 4.0+ (GL_TESS_CONTROL_SHADER / GL_TESS_EVALUATION_SHADER are
-// core since GL4.0). Targets #version 410 core specifically because macOS's
-// OpenGL ceiling is 4.1 core — see
-// docs/design-tessellation-displacement.md §2.
+// No cracks:
+//   - an edge shared by two patches of the same level is split identically
+//     by both (same endpoints, same formula), and every vertex takes its
+//     height from the same heightmap texels;
+//   - at a one-level transition (the most the CPU balance pass allows) the
+//     coarse side splits its edge into 2K segments and each fine half edge
+//     into K, so all vertices coincide.
 //
-// UNVERIFIED ON REAL GPU HARDWARE — see the banner comment at the top of
-// dem_tess_mesh.cpp for known open risks before trusting this in production,
-// including a documented residual at different-level transitions on steep
-// terrain (tilted-normal displacement of non-corner boundary vertices).
+// Requires GL 4.0+; targets #version 410 core (macOS's ceiling).
 // ---------------------------------------------------------------------------
 const char* kMeshTessVert = R"GLSL(
 #version 410 core
@@ -286,92 +293,55 @@ uniform float uViewportH;
 uniform float uTanHalfFov;
 uniform float uZScale;
 uniform float uTargetPixelsPerSegment;
-uniform float uConstrainedEdgeTessLevel;
+uniform float uTransitionSegments; // K, an integer: see outerLevelFor()
+uniform vec2 uHeightmapTexels;     // heightmap size in texels
 
-// This uniform's value is set from DEMTessMesh::render() to always match
-// the free formula's overall density (both scale inversely with the same
-// S/F-controlled density factor — see dem_tess_mesh.cpp render()) so a
-// coarse patch and its finer neighbor's two half-edges keep agreeing on
-// this value regardless of the current density setting; it is NOT a
-// compile-time constant precisely because it must move in lockstep with
-// uTargetPixelsPerSegment for that agreement to hold. See §5.1 of
-// docs/design-tessellation-displacement.md for the full argument for why
-// a SHARED value (constant or not) is what makes a constrained edge
-// crack-free, regardless of what that shared value currently is.
-
-// Free, continuous, view-dependent formula — ONLY valid on edges where
-// both sides are guaranteed to compute the same corner endpoints (same-
-// level neighbor, or a raster-domain boundary with no neighbor at all).
-// See the file-level comment above for the crack-avoidance argument.
-//
-// Deliberately driven by screen-space size ALONE, not scaled by any
-// CPU-side judgment of how "flat" or well-approximated a patch is (a
-// per-patch density-scaling factor was tried and reverted — see design
-// doc §6q's follow-up note — because it undermines the entire reason
-// this feature exists: GPU tessellation + per-vertex displacement is
-// supposed to catch and correct whatever the CPU's own, necessarily
-// coarse and finite-resolution sampling (§4b/§6k) might have missed,
-// and scaling GENERATED vertex count down based on that SAME coarse
-// judgment reintroduces exactly the aliasing risk the bottom-up collapse
-// was built to minimize. Every vertex's position should come from the
-// DEM — the only point of displacement is to refine that on the fly for
-// whatever vertices get generated, so generating fewer of them based on
-// a possibly-wrong flatness call works against that, not with it).
-float freeEdgeTessLevel(vec3 aGL, vec3 bGL) {
+// Screen-space level for an edge, capped at the number of heightmap texels
+// it spans: beyond one vertex per DEM pixel there is nothing new to sample.
+// Both patches sharing an edge pass identical endpoints and UVs, so they
+// compute identical levels (no crack).
+float freeEdgeTessLevel(vec3 aGL, vec3 bGL, vec2 uvA, vec2 uvB) {
     vec3 a = vec3(aGL.x, aGL.y * uZScale, aGL.z);
     vec3 b = vec3(bGL.x, bGL.y * uZScale, bGL.z);
-    vec3 mid = (a + b) * 0.5;
-    float dist = max(length(mid - uCamPos), 0.0001);
+    float dist = max(length((a + b) * 0.5 - uCamPos), 0.0001);
     float pxPerUnit = uViewportH / (2.0 * dist * uTanHalfFov);
-    float edgeLenGL = length(b - a);
-    float edgeLenPx = edgeLenGL * pxPerUnit;
-    return clamp(edgeLenPx / uTargetPixelsPerSegment, 1.0, 64.0);
+    float level = length(b - a) * pxPerUnit / uTargetPixelsPerSegment;
+    float texels = length((uvB - uvA) * uHeightmapTexels);
+    return clamp(min(level, max(texels, 1.0)), 1.0, 64.0);
 }
 
-float outerLevelFor(vec3 aGL, vec3 bGL, float constraint) {
-    return (constraint > 0.5) ? uConstrainedEdgeTessLevel : freeEdgeTessLevel(aGL, bGL);
+// Edge codes from the CPU (dem_quadtree.h edgeCodes): 0 = free, 1 = this
+// patch is the finer side of a one-level transition, 2 = the coarser side.
+// The coarse side splits its edge into 2K segments and each fine half edge
+// into K, so every vertex along the edge exists on both sides, at the same
+// position and (sampled from the same heightmap) the same height.
+float outerLevelFor(int i, int j, float code) {
+    if (code > 1.5) return 2.0 * uTransitionSegments;
+    if (code > 0.5) return uTransitionSegments;
+    return freeEdgeTessLevel(vPosTC[i], vPosTC[j], vHeightUVTC[i], vHeightUVTC[j]);
 }
 
 void main() {
     vPosTC[gl_InvocationID]      = vPosVC[gl_InvocationID];
     vUVTC[gl_InvocationID]       = vUVVC[gl_InvocationID];
     vHeightUVTC[gl_InvocationID] = vHeightUVVC[gl_InvocationID];
-
-    // Must synchronize before invocation 0 reads all 4 corners' outputs.
     barrier();
 
     if (gl_InvocationID == 0) {
-        // Corner order (CCW): 0=BL, 1=BR, 2=TR, 3=TL — matches
-        // DEMTessMesh::loadFromDEM()'s patch corner winding.
-        vec4 ec = vEdgeConstraintVC[0]; // x=bottom,y=right,z=top,w=left — same on all 4 corners
-        float eBottom = outerLevelFor(vPosTC[0], vPosTC[1], ec.x);
-        float eRight  = outerLevelFor(vPosTC[1], vPosTC[2], ec.y);
-        float eTop    = outerLevelFor(vPosTC[2], vPosTC[3], ec.z);
-        float eLeft   = outerLevelFor(vPosTC[3], vPosTC[0], ec.w);
-
-        // NOTE: GLSL quad-domain OuterLevel[i] <-> physical-edge
-        // correspondence (OuterLevel[0]=u=0/left, [1]=v=0/bottom,
-        // [2]=u=1/right, [3]=v=1/top) is per the GLSL 4.x spec as currently
-        // understood, but has NOT been visually verified on real hardware —
-        // see docs/design-tessellation-displacement.md §9. If patches look
-        // stretched/rotated wrong on first test, this mapping is the first
-        // place to check.
-        gl_TessLevelOuter[0] = eLeft;
-        gl_TessLevelOuter[1] = eBottom;
-        gl_TessLevelOuter[2] = eRight;
-        gl_TessLevelOuter[3] = eTop;
-
-        // INNER tessellation is entirely private to this patch — no
-        // cross-patch agreement needed, so it stays fully free/continuous
-        // regardless of whether any of this patch's edges are constrained.
-        // Using the free formula on the FULL diagonal-ish span (via the
-        // corner-to-corner distance already computed for outer edges)
-        // keeps interior detail responsive even on patches that have a
-        // constrained boundary.
-        gl_TessLevelInner[0] = max(freeEdgeTessLevel(vPosTC[0], vPosTC[1]),
-                                   freeEdgeTessLevel(vPosTC[2], vPosTC[3]));
-        gl_TessLevelInner[1] = max(freeEdgeTessLevel(vPosTC[3], vPosTC[0]),
-                                   freeEdgeTessLevel(vPosTC[1], vPosTC[2]));
+        // Corners 0..3 CCW from (col,row); edge codes x: 0→1, y: 1→2,
+        // z: 2→3, w: 3→0 (the same on all 4 corners).
+        vec4 ec = vEdgeConstraintVC[0];
+        // Quad domain: OuterLevel[0] = u=0 edge (3→0), [1] = v=0 (0→1),
+        // [2] = u=1 (1→2), [3] = v=1 (2→3).
+        gl_TessLevelOuter[0] = outerLevelFor(3, 0, ec.w);
+        gl_TessLevelOuter[1] = outerLevelFor(0, 1, ec.x);
+        gl_TessLevelOuter[2] = outerLevelFor(1, 2, ec.y);
+        gl_TessLevelOuter[3] = outerLevelFor(2, 3, ec.z);
+        // Inner levels are private to the patch: free, capped the same way.
+        gl_TessLevelInner[0] = max(freeEdgeTessLevel(vPosTC[0], vPosTC[1], vHeightUVTC[0], vHeightUVTC[1]),
+                                   freeEdgeTessLevel(vPosTC[3], vPosTC[2], vHeightUVTC[3], vHeightUVTC[2]));
+        gl_TessLevelInner[1] = max(freeEdgeTessLevel(vPosTC[0], vPosTC[3], vHeightUVTC[0], vHeightUVTC[3]),
+                                   freeEdgeTessLevel(vPosTC[1], vPosTC[2], vHeightUVTC[1], vHeightUVTC[2]));
     }
 }
 )GLSL";
@@ -395,12 +365,7 @@ uniform mat4 uView;
 uniform mat4 uProj;
 uniform float uZScale;
 uniform sampler2D uHeightmap;
-uniform int uDisplacementEnabled; // A key: 0 = show the plain tessellated
-                                  // coarse surface (no correction applied) —
-                                  // useful to visually isolate whether a
-                                  // seam comes from tessellation-count
-                                  // mismatch alone vs. from displacement,
-                                  // see docs/design-tessellation-displacement.md §9
+uniform int uDisplacementEnabled; // 0: plain bilinear patches (diagnostic)
 
 vec3 bilerp3(vec3 a, vec3 b, vec3 c, vec3 d, float u, float v) {
     // a=BL(0), b=BR(1), c=TR(2), d=TL(3)
@@ -429,53 +394,15 @@ void main() {
     vec2 uv       = bilerp2(vUVTC[0], vUVTC[1], vUVTC[2], vUVTC[3], u, v);
     vec2 heightUV = bilerp2(vHeightUVTC[0], vHeightUVTC[1], vHeightUVTC[2], vHeightUVTC[3], u, v);
 
-    // Requested directly: "the triangle's vertices must sit at the dem
-    // provided altitude ... what is acceptable is to have a shader
-    // controlled refinement with normal position driven by displacement
-    // mapping. that is still not the case." Correct, and this replaces a
-    // materially different (and materially wrong, for this specific use)
-    // prior approach: an earlier version displaced each generated vertex
-    // ALONG its interpolated surface normal, using a ray/tangent-plane
-    // intersection to decide how far — carefully re-derived more than
-    // once to be internally self-consistent, but solving the wrong
-    // problem regardless. Moving along a TILTED normal changes X and Z,
-    // not just Y, so that approach only ever landed the vertex on the
-    // tangent PLANE through the true DEM point, not the point itself —
-    // exactly right only where the surface happens to be flat
-    // (normal.y == 1), increasingly wrong as terrain steepens.
-    //
-    // For a heightfield, elevation is ALWAYS a function of (X,Z) along
-    // the fixed, global vertical axis — there is no local "surface
-    // normal direction" involved in what "the DEM's altitude at this
-    // point" even means. So the correct fix is simpler than what it
-    // replaces, not more complex: keep X and Z exactly as given by the
-    // coarse patch's own bilinear interpolation (that already correctly
-    // identifies which (X,Z) this GPU-generated vertex is FOR — nothing
-    // about that was ever wrong), and set Y directly to the true
-    // elevation at that (X,Z), sampled from the full-resolution
-    // heightmap. No normal, no projection, no per-slope approximation
-    // error, no safety clamp needed (a direct sample can never produce an
-    // implausible "overhang" the way a mis-scaled normal projection
-    // could) — every displaced vertex sits EXACTLY at the DEM-provided
-    // altitude for its (X,Z), for any slope.
-    float fineElev = coarsePos.y;
-    if (uDisplacementEnabled != 0) {
-        // w is a smooth bump function that is EXACTLY ZERO along all four
-        // patch edges (u or v == 0 or 1) and peaks at the patch center —
-        // so at and along every boundary, fineElev == coarsePos.y exactly
-        // BY CONSTRUCTION, regardless of any heightmap sampling
-        // imprecision there (e.g. from downsampling — see
-        // uploadHeightmapTexture()'s texel cap). That's what preserves
-        // the crack-freedom guarantee (§5.1/5.2 of the design doc): a
-        // coarse patch and any finer neighbor already agree exactly on
-        // shared edge/corner positions before displacement ever runs, and
-        // this never disturbs that agreement — only interior points
-        // (where neighboring-patch agreement was never a concern in the
-        // first place) move toward the true, full-resolution value.
-        float w = 16.0 * u * (1.0 - u) * v * (1.0 - v);
-        float fineElevRaw = textureLod(uHeightmap, heightUV, 0.0).r; // native res, true DEM value at this (X,Z)
-        fineElev = mix(coarsePos.y, fineElevRaw, w);
-    }
+    // Every generated vertex, patch corners included, takes its height from
+    // the heightmap at its own (X, Z): it sits on the DEM ("the triangle's
+    // vertices must sit at the dem provided altitude"). Taking all heights
+    // from the same texture also keeps shared edges watertight: two patches
+    // generating a vertex at the same place sample the same texel values.
+    // Off ("Displace" unchecked): the plain bilinear patch, a diagnostic.
+    float fineElev = (uDisplacementEnabled != 0)
+        ? textureLod(uHeightmap, heightUV, 0.0).r
+        : coarsePos.y;
 
     vec3 displaced = vec3(coarsePos.x, fineElev, coarsePos.z);
     displaced.y *= uZScale;
@@ -483,11 +410,7 @@ void main() {
     gl_Position = uProj * uView * vec4(displaced, 1.0);
     vUV = uv;
     vHeightUV = heightUV;
-    vElev = fineElev;  // the ACTUAL displayed elevation (pre-zScale) — more
-                       // accurate for the color ramp than the coarse
-                       // bilinear guess now that the true value is
-                       // available for free; matches coarsePos.y exactly
-                       // when displacement is off, unchanged behavior
+    vElev = fineElev;  // the displayed elevation, pre-zScale
     vEdgeDist = min(min(u, 1.0 - u), min(v, 1.0 - v));
 }
 )GLSL";
