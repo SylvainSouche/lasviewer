@@ -402,26 +402,24 @@ Output: `build/<os>-<arch>/bin/lasviewer` at the workspace root (e.g. `build/mac
 - glm is header-only with no pkg-config file: its include directory comes from per-target hooks (`GIS/libglm.m/mk/pre.<os>.mk`), and no library is staged.
 
 ### 12.2b
-Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/lasviewer.m/mk/pre.macos.mk` (OpenGL, Cocoa and IOKit frameworks) and `pre.linux.mk` (`-lGL`).
+Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/lasviewer.m/mk/local.macos.mk` (OpenGL, Cocoa and IOKit frameworks) and `local.linux.mk` (`-lGL`).
 
 ### 12.2c
-**bmake-it restrictions and how lasviewer works around them.** Checked against bmake-it `main` at 173f44a (2026-10-01). For each one: what goes wrong, why, the workaround and what it costs, and how to check that a fix makes it removable. Removing a workaround is the acceptance test: delete it, then build from a clean tree (`bmake clean`, or delete every `build/` and `work/`), since an incremental build can hide a regression (see "ImGui's include path" in the resolved list).
+**bmake-it restrictions and how lasviewer works around them.** Checked against bmake-it `main` at 53619d9 (2026-10-02). For each one: what goes wrong, why, the workaround and what it costs, and how to check that a fix makes it removable. Removing a workaround is the acceptance test: delete it, then build from a clean tree (`bmake clean`, or delete every `build/` and `work/`), since an incremental build can hide a regression (see "ImGui's include path" in the resolved list).
 
-**Workaround in place**
-
-1. **Link flags from `mk/local*.mk` hooks are dropped, and two-word flags are split** (`Viewer/lasviewer.m/mk/pre.macos.mk`: `LDFLAGS += -Wl,-framework,OpenGL -Wl,-framework,Cocoa -Wl,-framework,IOKit`; `pre.linux.mk`: `-lGL`).
-   - *Symptom:* with the flags in `local.macos.mk`, as before, the program link fails with `Undefined symbols … _glActiveTexture, _glAttachShader …`: no `-framework` reaches the link line.
-   - *Cause:* 173f44a removes repeated link flags (the fix for `ignoring duplicate libraries`) with a `!=` assignment, evaluated when `mk.prog.mk` is read, at line 256. The post-hooks (`mk.local.mk`, which reads `local.mk`/`local.<os>.mk`) are read later, at line 299, so whatever they add to `LDFLAGS` never reaches the link. The removal also compares single words, so `-framework OpenGL -framework Cocoa` becomes `-framework OpenGL Cocoa`, with `Cocoa` left as a stray input file. `-Xlinker` pairs break the same way.
-   - *Why the workaround works:* pre-hooks are read before line 256, and `-Wl,-framework,X` is one word.
-   - *Remove when:* the removal runs at link time, or after the post-hooks, and treats `-framework X` and `-Xlinker X` as one unit. Then move the flags back to `local.<os>.mk` in their usual form.
+**Workarounds in place:** none.
 
 **Restrictions not worked around**
-- *A clean build still archives `libgeo.a` twice*: `copy-up collision: 'libgeo.a' differs between source and destination` (once per clean build).
-- *A build with nothing to do still costs about 21 s.* Nothing is recompiled, re-archived or relinked any more, and headers aren't re-copied. But the import and staging steps of every imported module still run 4 times (`staged header(s) …`, `imported gdal …`, 4× each), and the 7 `.linkdeps` files are rewritten in their 3 copies each. An incremental build after touching one `Geo` file takes about 22 s (1 compile, then a relink).
-- *`REQUIRES=` can't check for a header-only library* (glm): `REQUIRES=header:…` was proposed and not implemented. glm is checked only by its import (`IMPORT_LIB=none`), which fails clearly if `glm/` isn't found.
+- *A build with nothing to do still takes about 20 s*, though it writes nothing and runs no compiler. Every framework is visited twice (`all`, then `copy-up` re-enters it), about 0.5 s per module visit. GIS also spends 2.5 s on each entry before its first module.
+- *Leftover messages on such a build:* ImGui's 9 fetched headers are still announced `staged header …` 4 times each (imported packages are silent now), and a clean build prints `built static libgeo.a` 4 times for a single `ar`.
+- *`REQUIRES=header:` checks with the compiler's default include path only.* MacPorts clang doesn't search `/opt/local/include`, so `REQUIRES=header:glm/glm.hpp` fails although glm is installed and `IMPORT_LIB=none` finds it by probing the tool prefixes. lasviewer doesn't use it; the import already stops the build clearly if glm is missing.
+- *A failed framework doesn't stop the frameworks that depend on it.* When GIS failed, Geo and Viewer still built and failed on `'glm/glm.hpp' file not found`, burying the real error.
 - *Fetched upstream builds can't be cross-compiled* (`FETCH_BUILD=cmake` drops cross flags). Cross-compiling is out of scope for lasviewer for now.
 
 **Resolved in bmake-it, workarounds removed**
+- *In 53619d9 (round 4):*
+  - **Link flags from `local*.mk` hooks**: the duplicate-removal introduced in round 3 ran before the post-hooks were read, so `-framework OpenGL Cocoa IOKit` never reached the link (`Undefined symbols … _glActiveTexture`), and it split `-framework X` pairs. It now runs at link time on `-l`/`-L`/rpath only. The interim one-word `-Wl,-framework,X` pre-hook is gone; the flags are back in `local.<os>.mk`.
+  - **Builds with nothing to do** no longer write any file (staging and `.linkdeps` are fingerprint-guarded), and a clean build archives each static library once (the `copy-up collision` warning is gone).
 - *In 173f44a (round 3):*
   - **GDAL's link list**: an imported shared library now records plain `pkg-config --libs`; the `--static` list (about 35 libraries, without their `-L`, failing with `library 'lz4' not found`) is kept for static-only imports. The `IMPORT_PREFIX=/opt/local` hook, hard-coded for MacPorts, is gone.
   - **ImGui's include path**: the fetched archive's root is on the include path of its own compiles. Before, a fresh tree failed with `'imgui.h' file not found`. An incremental build hid the bug because `imgui.h` was already staged; removing the hook in an incremental build "worked", which was my first, wrong conclusion.
