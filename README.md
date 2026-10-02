@@ -53,7 +53,7 @@ sh bmake-it/scripts/install-env.sh      # adds MAKESYSPATH to your shell rc; or:
 export MAKESYSPATH=/path/to/bmake-it/mk:/opt/local/share/mk
 ```
 
-Use bmake-it `main` at 53619d9 or later (`IMPORT_LIB=none`, header patterns, `DOCS=no`, link flags from `local.mk` hooks). A missing prerequisite stops the build at once with its name (`REQUIRES=` in the module makefiles).
+Use bmake-it `main` at c4d7295 or later (`IMPORT_LIB=none`, `REQUIRES=header:`, header patterns, `DOCS=no`). A missing prerequisite stops the build at once with its name (`REQUIRES=` in the module makefiles).
 
 ### Build
 

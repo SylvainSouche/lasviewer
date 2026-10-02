@@ -405,18 +405,20 @@ Output: `build/<os>-<arch>/bin/lasviewer` at the workspace root (e.g. `build/mac
 Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/lasviewer.m/mk/local.macos.mk` (OpenGL, Cocoa and IOKit frameworks) and `local.linux.mk` (`-lGL`).
 
 ### 12.2c
-**bmake-it restrictions and how lasviewer works around them.** Checked against bmake-it `main` at 53619d9 (2026-10-02). For each one: what goes wrong, why, the workaround and what it costs, and how to check that a fix makes it removable. Removing a workaround is the acceptance test: delete it, then build from a clean tree (`bmake clean`, or delete every `build/` and `work/`), since an incremental build can hide a regression (see "ImGui's include path" in the resolved list).
+**bmake-it restrictions and how lasviewer works around them.** Checked against bmake-it `main` at c4d7295 (2026-10-02). For each one: what goes wrong, why, the workaround and what it costs, and how to check that a fix makes it removable. Removing a workaround is the acceptance test: delete it, then build from a clean tree (`bmake clean`, or delete every `build/` and `work/`), since an incremental build can hide a regression (see "ImGui's include path" in the resolved list).
 
 **Workarounds in place:** none.
 
 **Restrictions not worked around**
-- *A build with nothing to do still takes about 20 s*, though it writes nothing and runs no compiler. Every framework is visited twice (`all`, then `copy-up` re-enters it), about 0.5 s per module visit. GIS also spends 2.5 s on each entry before its first module.
-- *Leftover messages on such a build:* ImGui's 9 fetched headers are still announced `staged header …` 4 times each (imported packages are silent now), and a clean build prints `built static libgeo.a` 4 times for a single `ar`.
-- *`REQUIRES=header:` checks with the compiler's default include path only.* MacPorts clang doesn't search `/opt/local/include`, so `REQUIRES=header:glm/glm.hpp` fails although glm is installed and `IMPORT_LIB=none` finds it by probing the tool prefixes. lasviewer doesn't use it; the import already stops the build clearly if glm is missing.
-- *A failed framework doesn't stop the frameworks that depend on it.* When GIS failed, Geo and Viewer still built and failed on `'glm/glm.hpp' file not found`, burying the real error.
+- *The first rebuild after a clean build re-runs laz-perf's CMake configure and install once* ("Check for working CXX compiler … built via FETCH_BUILD=cmake"); every build after that is silent. It costs about 5 s, once.
 - *Fetched upstream builds can't be cross-compiled* (`FETCH_BUILD=cmake` drops cross flags). Cross-compiling is out of scope for lasviewer for now.
 
 **Resolved in bmake-it, workarounds removed**
+- *In c4d7295 (round 5):*
+  - `REQUIRES=header:` also looks under the tool prefixes the import probe uses, so `REQUIRES=header:glm/glm.hpp` passes with MacPorts clang (which doesn't search `/opt/local/include`); `GIS/libglm.m` declares it.
+  - A failed framework stops the ones that depend on it: a forced GIS failure now reports `framework Geo skipped: prerequisite GIS failed` and `Viewer … (root cause: GIS)` instead of burying the real error under `glm.hpp not found`.
+  - Each module is entered once per build, not twice (`all`, then `copy-up`). A build with nothing to do went from 20 s to 5 s, an incremental one from 20 s to 5 s, a clean one from 62 s to 33 s.
+  - No repeated messages: "built static …" is printed by the archive step itself, and fetched headers are fingerprint-guarded.
 - *In 53619d9 (round 4):*
   - **Link flags from `local*.mk` hooks**: the duplicate-removal introduced in round 3 ran before the post-hooks were read, so `-framework OpenGL Cocoa IOKit` never reached the link (`Undefined symbols … _glActiveTexture`), and it split `-framework X` pairs. It now runs at link time on `-l`/`-L`/rpath only. The interim one-word `-Wl,-framework,X` pre-hook is gone; the flags are back in `local.<os>.mk`.
   - **Builds with nothing to do** no longer write any file (staging and `.linkdeps` are fingerprint-guarded), and a clean build archives each static library once (the `copy-up collision` warning is gone).
