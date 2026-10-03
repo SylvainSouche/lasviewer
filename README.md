@@ -140,6 +140,7 @@ The build is [bmake-it](https://github.com/SylvainSouche/bmake-it): a workspace 
 ```bash
 bmake                 # build everything for the host (build/<os>-<arch>/)
 bmake test            # atf-c++ tests via Kyua (Geo: raster, las, height_model; Viewer: basic, scene, dem, cli, copc)
+                      # + render tests (Viewer/render.tst, macOS only: they need a GPU and a display)
 bmake test REPORT=yes # same, plus a Kyua HTML report (path printed at the end)
 bmake SANITIZE=address && bmake test SANITIZE=address   # AddressSanitizer build
 bmake docs            # Doxygen for Geo's public headers → Geo/docs/html (index: build/docs/)
@@ -154,7 +155,7 @@ cd Geo && bmake       # build / test one framework (or one module: cd Geo/libgeo
 | `GIS` | laz-perf and copc-lib (fetched, built with CMake); GDAL and glm (imported) | glm is header-only |
 | `GUI` | GLFW imported; Dear ImGui fetched and compiled (`libimgui.a`) | ImGui comes from its release archive (`IMPORT=fetch:`), warnings off |
 | `Geo` | `libgeo.a`: point-cloud (laz-perf) and raster (GDAL) I/O | no OpenGL; `raster_test`, `las_test`, `height_model_test` |
-| `Viewer` | the `lasviewer` program | `basic_test`, `scene_test`, `dem_test`, `cli_test`, `copc_test` |
+| `Viewer` | the `lasviewer` program; `render.tst`, render tests | `basic_test`, `scene_test`, `dem_test`, `cli_test`, `copc_test`; `render.tst/testcases/dem_render.sh` |
 
 Headers follow bmake-it's visibility rules: `<fw>/include/` is public (reached through `PREREQS=`), `<fw>/local/include/` is shared by that framework's modules, `<module>/include/` is private.
 
@@ -200,6 +201,9 @@ Viewer/
     log_capture.cpp          std::cerr → in-app log (thread-safe)
   lasviewer.m/tests/         basic_test (formulas), scene_test (frame + camera), dem_test (DEM quadtree
                              and mesh), cli_test (command line), copc_test (COPC tiles, level of detail)
+  render.tst/                bmake-it test module (built, never shipped; macOS only): render_tool
+                             (synthetic DEMs, snapshot measures) + testcases/dem_render.sh, which run
+                             lasviewer --snapshot: no hole through the DEM mesh, MNT + MNH renders
 docs/                        design notes (DEM tessellation)
 scripts/                     lint.sh (clang-format + clang-tidy), ci.sh (what CI runs)
 ```

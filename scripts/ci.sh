@@ -11,7 +11,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-BMAKE_IT_REF=${BMAKE_IT_REF:-87048cd}
+BMAKE_IT_REF=${BMAKE_IT_REF:-8ec9cdf}
 WORK=${WORK:-$PWD/.ci}
 
 case "${1:-}" in
