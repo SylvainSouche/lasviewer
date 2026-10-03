@@ -22,7 +22,7 @@ jobs:
             GIS/*/distfiles
             GUI/*/distfiles
           key: distfiles-${{ hashFiles('**/distinfo') }}
-      - name: Build and test (bmake, bmake test)
+      - name: Build and test (bmake test)
         run: scripts/ci.sh build
       - name: Lint (clang-format and clang-tidy 22)
         run: scripts/ci.sh lint

@@ -410,16 +410,19 @@ Output: `build/<os>-<arch>/bin/lasviewer` at the workspace root (e.g. `build/mac
 Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/lasviewer.m/mk/local.macos.mk` (OpenGL, Cocoa and IOKit frameworks) and `local.linux.mk` (`-lGL`).
 
 ### 12.2c
-**bmake-it restrictions and how lasviewer works around them.** Checked against bmake-it `main` at 8ec9cdf (2026-10-03), on macOS and Linux (Ubuntu 24.04, in CI). For each one: what goes wrong, why, the workaround and what it costs, and how to check that a fix makes it removable. Removing a workaround is the acceptance test: delete it, then build from a clean tree (`bmake clean`, or delete every `build/` and `work/`), since an incremental build can hide a regression (see "ImGui's include path" in the resolved list).
+**bmake-it restrictions and how lasviewer works around them.** Checked against bmake-it `main` at 08da72a (2026-10-03), on macOS and Linux (Ubuntu 24.04, in CI). For each one: what goes wrong, why, the workaround and what it costs, and how to check that a fix makes it removable. Removing a workaround is the acceptance test: delete it, then build from a clean tree (`bmake clean`, or delete every `build/` and `work/`), since an incremental build can hide a regression (see "ImGui's include path" in the resolved list).
 
 **Workarounds in place:** none, on macOS or Linux.
 
 **Restrictions not worked around**
-- *A static library's OpenMP runtime doesn't follow it through `LIBS=`:* `render.tst`, linking `libgeo.a` (built with `OPENMP=yes`), failed with undefined `___kmpc_*` symbols until it set `OPENMP=yes` itself, as `lasviewer.m` does.
-- *From a clean tree, `bmake test` alone fails at the workspace:* each tested module now builds itself first (`test` depends on `all`), but the frameworks without tests (GIS, GUI) are never built, so Geo and Viewer compile without glm's and GLFW's staged headers (`'glm/glm.hpp' file not found`). Run `bmake` before `bmake test` on a clean tree (`scripts/ci.sh build` does); after that, `bmake test` alone is enough, library changes included.
 - *Fetched upstream builds can't be cross-compiled* (`FETCH_BUILD=cmake` drops cross flags). Cross-compiling is out of scope for lasviewer for now.
 
 **Resolved in bmake-it, workarounds removed**
+- *In 08da72a (rounds 7–8):*
+  - `bmake test` from a clean tree builds everything first (it failed on `'glm/glm.hpp' file not found`, because the frameworks without tests, GIS and GUI, were never built); `scripts/ci.sh` no longer runs `bmake` before it;
+  - a static library built with `OPENMP=yes` records the OpenMP runtime in its link dependencies (`render.tst`, linking `libgeo.a`, failed with undefined `___kmpc_*` until it set `OPENMP=yes` itself; it no longer does);
+  - `IMPORT_LIB=none` (glm) no longer prints a misleading "skipping lib staging" message.
+- *In 8ec9cdf:* `.tst` test modules and `PLATFORMS=`/`TOOLCHAINS=`, used by `Viewer/render.tst`.
 - *In 87048cd (round 6, first Linux build):*
   - fetched CMake builds failed on every non-macOS host (`/bin/sh: Syntax error: ")" unexpected`: a `;` was missing after the non-macOS deployment-target prologue); `ci.sh` passed `_FETCH_DEPLOY_EXPORT=:;`;
   - imports whose headers are in `/usr/include` had no include directory to stage from (`pkg-config --cflags` omits it); `ci.sh` passed `GLM_CFLAGS=-I/usr/include`;
@@ -457,7 +460,7 @@ Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/la
 **Prerequisites versus fetched modules.** A dependency that can be downloaded from one single source (a release archive) for every supported platform is a fetched module, built by bmake-it. Anything else is a **prerequisite**, installed with the platform's own package manager before building, all from one source (no mixing of package managers). Today: GDAL, GLFW, glm and the OpenMP runtime are prerequisites; laz-perf, copc-lib and Dear ImGui are fetched. README → Prerequisites lists the package names per platform. Modules declare what they check with `REQUIRES=` (bmake-it: `pkg-config --exists`, else `command -v`): `gdal` and `glfw3` on their import modules, `cmake` on the two CMake-built ones. glm, header-only, is declared with `REQUIRES=header:glm/glm.hpp`.
 
 ### 12.3
-`bmake test` builds and runs the atf-c++ tests with Kyua: `Geo/libgeo.m/tests/{raster_test,las_test,height_model_test}.cpp` (linked against `libgeo.a`) and `Viewer/lasviewer.m/tests/{basic_test,scene_test,dem_test,cli_test,copc_test}.cpp` (linked against the viewer's objects except `main.o`). On a clean tree run `bmake` first (§12.2c); afterwards `bmake test` rebuilds what changed.
+`bmake test` builds and runs the atf-c++ tests with Kyua: `Geo/libgeo.m/tests/{raster_test,las_test,height_model_test}.cpp` (linked against `libgeo.a`) and `Viewer/lasviewer.m/tests/{basic_test,scene_test,dem_test,cli_test,copc_test}.cpp` (linked against the viewer's objects except `main.o`). `bmake test` builds whatever is needed first, from a clean tree too.
 
 **Render tests** (`Viewer/render.tst`, a bmake-it `.tst` test module: built by `bmake`, run by `bmake test`, never copied up or shipped). `PLATFORMS=macos`: they run `lasviewer --snapshot`, which needs a GPU and a display, so they're skipped where there is none (CI's Linux runners), with `REASON.macos` saying why. `render_tool` (the module's utility, `PROG=`) writes synthetic DEMs and measures snapshots; `testcases/dem_render.sh` (atf-sh) is the test, finding `lasviewer` on `PATH` (the workspace `bin/`):
 - `crack_free`: a terrain with relief at every scale (octaves 200 m … 3 m, so a 20° collapse angle gives levels 1–6 and many transitions), rendered from below the surface in 4 views; any background pixel enclosed by surface is a hole through the mesh. Verified to fail with the old 1:1 transition rule (16–222 holes per view) and to pass now (0).
@@ -470,7 +473,7 @@ Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/la
 **Formatting, enforced** (`.clang-format`): LLVM base, C++17, 100 columns, 4-space indent, attached braces, left pointers, one-line `if`/loops allowed, no alignment of consecutive assignments, includes grouped as project / third-party libraries / standard library. `bmake lint` (`scripts/lint.sh`) checks both 12.4 and 12.5 and fails on any deviation; `bmake lint-fix` applies them. Both tools are pinned to version 22 (CI installs 22.1.8 from PyPI): other versions may format slightly differently.
 
 ### 12.5b
-**CI** (`.github/workflows/ci.yml`): on every push to `main` and every pull request, on Ubuntu 24.04: prerequisites from apt, then bmake-it at a pinned commit (8ec9cdf), `bmake`, `bmake test`, `bmake lint`, with no workaround (the render tests are skipped there: `PLATFORMS=macos`) — the steps of `scripts/ci.sh deps|build|lint`, which reproduce it on any Debian/Ubuntu machine or container. The tests don't draw, so no GPU is needed. Test results (JUnit XML and logs) are kept as a workflow artifact.
+**CI** (`.github/workflows/ci.yml`): on every push to `main` and every pull request, on Ubuntu 24.04: prerequisites from apt, then bmake-it at a pinned commit (08da72a), `bmake test` (which builds everything first), `bmake lint`, with no workaround (the render tests are skipped there: `PLATFORMS=macos`) — the steps of `scripts/ci.sh deps|build|lint`, which reproduce it on any Debian/Ubuntu machine or container. The tests don't draw, so no GPU is needed. Test results (JUnit XML and logs) are kept as a workflow artifact.
 
 ### 12.6
 `bmake docs` generates Doxygen HTML from `Geo`'s public `include/` (`Geo/docs/html/`, git-ignored) and a workspace page in `build/docs/index.html`. `GIS`, `GUI` (imported headers only) and `Viewer` (framework-local headers only) set `DOCS=no`.
