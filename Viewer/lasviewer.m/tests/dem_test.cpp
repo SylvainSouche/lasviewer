@@ -239,25 +239,28 @@ ATF_TEST_CASE_BODY(test_leaf_index) {
 // took seconds), heightmap UVs on texel centres, edge codes uploaded.
 ATF_TEST_CASE_WITHOUT_HEAD(test_mesh_build);
 ATF_TEST_CASE_BODY(test_mesh_build) {
+    // The raster is made once, outside the timed build (the source only
+    // copies it), so the timing measures the mesh build alone.
     const int W = 2000, H = 2000;
     std::mt19937 rng(3);
     std::normal_distribution<double> noise(0.0, 0.03);
+    DemRaster raster;
+    raster.A = 0.5;
+    raster.E = -0.5;
+    raster.C = 1000.25;
+    raster.F = 2999.75;
+    raster.hasGeo = true;
+    raster.width = W;
+    raster.height = H;
+    raster.hasNodata = true;
+    raster.nodata = -9999.0f;
+    raster.elevations.resize(static_cast<size_t>(W) * H);
+    for (int r = 0; r < H; ++r)
+        for (int c = 0; c < W; ++c)
+            raster.elevations[static_cast<size_t>(r) * W + c] =
+                static_cast<float>(300.0 + 30.0 * std::sin(c / 300.0) + noise(rng));
     DemSource source = [&](DemSourceData& out) {
-        DemRaster& d = out.dem;
-        d.A = 0.5;
-        d.E = -0.5;
-        d.C = 1000.25;
-        d.F = 2999.75;
-        d.hasGeo = true;
-        d.width = W;
-        d.height = H;
-        d.hasNodata = true;
-        d.nodata = -9999.0f;
-        d.elevations.resize(static_cast<size_t>(W) * H);
-        for (int r = 0; r < H; ++r)
-            for (int c = 0; c < W; ++c)
-                d.elevations[static_cast<size_t>(r) * W + c] =
-                    static_cast<float>(300.0 + 30.0 * std::sin(c / 300.0) + noise(rng));
+        out.dem = raster;
         return true;
     };
     SceneFrame frame;
@@ -267,7 +270,10 @@ ATF_TEST_CASE_BODY(test_mesh_build) {
     auto t0 = std::chrono::steady_clock::now();
     CHECK(mesh.loadFromDEM(source, nullptr, frame, 1.0, 5));
     double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    CHECK(secs < 3.0); // building the raster itself included
+    // About 0.1 s on a 2026 laptop. The old quadratic neighbour search took
+    // 6.7 s for the same build there; the bound leaves room for slow CI
+    // machines and still catches a quadratic algorithm.
+    CHECK(secs < 2.5);
     CHECK(mesh.patchCount > 64);
     CHECK(mesh.patchHeightUVs.size() == static_cast<size_t>(mesh.patchCount) * 8);
     CHECK(mesh.patchEdgeConstraint.size() == static_cast<size_t>(mesh.patchCount) * 16);

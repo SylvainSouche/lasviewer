@@ -3,7 +3,7 @@
 # fresh Debian/Ubuntu machine or container to reproduce it:
 #
 #   scripts/ci.sh deps     install the build, test and lint prerequisites (apt, root)
-#   scripts/ci.sh build    fetch bmake-it at the pinned commit, bmake, bmake test
+#   scripts/ci.sh build    fetch bmake-it at the pinned commit, bmake test (builds first)
 #   scripts/ci.sh lint     bmake lint with clang-format/clang-tidy 22 (pip)
 #
 # BMAKE_IT_REF pins bmake-it (a commit of github.com/SylvainSouche/bmake-it);
@@ -11,7 +11,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-BMAKE_IT_REF=${BMAKE_IT_REF:-8ec9cdf}
+BMAKE_IT_REF=${BMAKE_IT_REF:-08da72a}
 WORK=${WORK:-$PWD/.ci}
 
 case "${1:-}" in
@@ -33,11 +33,7 @@ build)
     git -C "$WORK/bmake-it" fetch -q origin
     git -C "$WORK/bmake-it" checkout -q "$BMAKE_IT_REF"
     export MAKESYSPATH="$WORK/bmake-it/mk:/usr/share/mk"
-    # `bmake test` builds each tested module first, but from a clean tree
-    # not the frameworks without tests (GIS, GUI) that the others need:
-    # build everything first (specs.md §12.2c).
-    bmake
-    bmake test
+    bmake test # builds everything first, then runs the tests
     ;;
 lint)
     if [ ! -x "$WORK/venv/bin/clang-format" ]; then

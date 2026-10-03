@@ -5,6 +5,4 @@ PLATFORMS=macos
 REASON.macos=render tests need a GPU and a display (CI's Linux runners have neither)
 PROG=render_tool
 LIBS=geo
-# libgeo.a uses OpenMP; its runtime doesn't follow it through LIBS= (specs.md §12.2c).
-OPENMP=yes
 .include "mk.tst.mk"
