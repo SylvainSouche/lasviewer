@@ -34,14 +34,16 @@ A dependency that can be downloaded from one single source for every supported p
 | GDAL | `gdal` | `gdal` | `geography/gdal-lib` | `gdal` | `libgdal-dev` | `gdal-dev` | `gdal-devel` |
 | GLFW | `glfw` | `glfw` | `graphics/glfw` | `glfw` | `libglfw3-dev` | `glfw-dev` | — |
 | glm (headers) | `glm` | `glm` | `graphics/glm` | `glm` | `libglm-dev` | `glm-dev` | — |
-| OpenMP runtime | `libomp` (with clang) | `libomp` | with the compiler | with the compiler | with gcc (`libgomp`) | with gcc | with MSVC |
-| Build tools | `bmake cmake pkgconfig` | `bmake cmake pkg-config` | `bmake cmake pkgconf` | `cmake pkgconf` (base `make` is bmake) | `bmake cmake pkg-config` | `bmake cmake pkgconf` | — |
-| Tests only | `atf kyua` | `atf kyua` | `atf kyua` | in base | — | — | — |
+| OpenMP runtime | `libomp` (with clang) | `libomp` | with the compiler | with the compiler | `libomp-dev` (with clang) | with gcc | with MSVC |
+| Build tools | `bmake cmake pkgconfig` | `bmake cmake pkg-config` | `bmake cmake pkgconf` | `cmake pkgconf` (base `make` is bmake) | `bmake make clang cmake pkg-config libgl-dev` | `bmake cmake pkgconf` | — |
+| Tests only | `atf kyua` | `atf kyua` | `atf kyua` | in base | `libatf-dev atf-sh kyua` | — | — |
 
 For example, on macOS with MacPorts:
 ```bash
 sudo port install gdal glfw glm libomp bmake cmake pkgconfig atf kyua
 ```
+
+On Debian/Ubuntu, `sudo scripts/ci.sh deps` installs the whole column (it is what CI runs). CMake needs a build tool of its own (`make`) to build the fetched libraries.
 
 Fetched and built by the first `bmake` (network access needed once; checked against each module's `distinfo`, nothing committed): **laz-perf** 3.4.0 and **copc-lib** 2.6.3 (point-cloud reading, built with their own CMake) and **Dear ImGui** 1.91.9b. All dependencies must come from one source: don't mix, e.g., a GDAL from MacPorts with one from Homebrew.
 
@@ -137,10 +139,11 @@ The build is [bmake-it](https://github.com/SylvainSouche/bmake-it): a workspace 
 
 ```bash
 bmake                 # build everything for the host (build/<os>-<arch>/)
-bmake test            # atf-c++ tests via Kyua (Geo: raster, las, height_model; Viewer: basic, scene)
+bmake test            # atf-c++ tests via Kyua (Geo: raster, las, height_model; Viewer: basic, scene, dem, cli, copc)
 bmake test REPORT=yes # same, plus a Kyua HTML report (path printed at the end)
 bmake SANITIZE=address && bmake test SANITIZE=address   # AddressSanitizer build
 bmake docs            # Doxygen for Geo's public headers → Geo/docs/html (index: build/docs/)
+bmake lint            # formatting (clang-format) and naming (clang-tidy) check; lint-fix applies them
 bmake clean
 bmake help
 cd Geo && bmake       # build / test one framework (or one module: cd Geo/libgeo.m)
@@ -150,10 +153,14 @@ cd Geo && bmake       # build / test one framework (or one module: cd Geo/libgeo
 |---|---|---|
 | `GIS` | laz-perf and copc-lib (fetched, built with CMake); GDAL and glm (imported) | glm is header-only |
 | `GUI` | GLFW imported; Dear ImGui fetched and compiled (`libimgui.a`) | ImGui comes from its release archive (`IMPORT=fetch:`), warnings off |
-| `Geo` | `libgeo.a`: point-cloud (laz-perf) and raster (GDAL) I/O | no OpenGL; `raster_test`, `las_test` |
-| `Viewer` | the `lasviewer` program | `basic_test`, `scene_test` |
+| `Geo` | `libgeo.a`: point-cloud (laz-perf) and raster (GDAL) I/O | no OpenGL; `raster_test`, `las_test`, `height_model_test` |
+| `Viewer` | the `lasviewer` program | `basic_test`, `scene_test`, `dem_test`, `cli_test`, `copc_test` |
 
 Headers follow bmake-it's visibility rules: `<fw>/include/` is public (reached through `PREREQS=`), `<fw>/local/include/` is shared by that framework's modules, `<module>/include/` is private.
+
+**Code style** is enforced, not just configured: `.clang-format` (LLVM-based, 100 columns, 4 spaces) and `.clang-tidy` (naming: types `CamelCase`, functions and variables `camelBack`, private members `camelBack_`, constants `kCamelCase`), both pinned to version 22. `bmake lint` fails on any deviation; `bmake lint-fix` applies them.
+
+**CI** (GitHub Actions, `.github/workflows/ci.yml`) builds, runs the unit tests and lints on Ubuntu 24.04 for every push to `main` and every pull request. Its steps are `scripts/ci.sh deps|build|lint`, which reproduce it on any Debian/Ubuntu machine or container. The tests don't draw, so no GPU is needed; Linux is built and tested there but not yet run on a Linux GPU.
 
 Per-target settings live in `mk/` hook files next to the module, for example `Viewer/lasviewer.m/mk/local.macos.mk` (OpenGL frameworks) or `local.linux.mk` (`-lGL`).
 
@@ -168,13 +175,15 @@ makefile                     bmake-it workspace
 GIS/                         liblazperf.m, libcopc.m (fetched + CMake), libgdal.m, libglm.m (imported)
 GUI/                         libglfw.m (imported), libimgui.m (Dear ImGui, fetched: makefile + distinfo)
 Geo/
-  include/                   public: point_cloud.h, raster.h, scene_frame.h
-  libgeo.m/src/              point_cloud.cpp (laz-perf), las_format.cpp (records, CRS), raster.cpp (GDAL)
-  libgeo.m/tests/            raster_test.cpp, las_test.cpp
+  include/                   public: point_cloud.h, raster.h, scene_frame.h, las_format.h, height_model.h
+  libgeo.m/src/              point_cloud.cpp (laz-perf), las_format.cpp (records, CRS), raster.cpp (GDAL),
+                             height_model.cpp (MNT/MNH/MNS composition)
+  libgeo.m/tests/            raster_test.cpp, las_test.cpp, height_model_test.cpp
 Viewer/
   local/include/             headers shared inside Viewer
   lasviewer.m/src/
-    main.cpp                 command line → LoadPlan → ViewerApp
+    main.cpp                 starts ViewerApp from the command line
+    cli.cpp                  command line → LoadPlan (options, .tif classified by content)
     viewer_app.cpp           window, GL context, frame loop, input routing, picking
     viewer_ui.cpp            ImGui panels (layers, view, info, log, help)
     camera.cpp               orbit camera, projection, near/far from bounds
@@ -184,12 +193,15 @@ Viewer/
     copc_layer.cpp           COPC streaming layer (wraps TileGrid)
     copc_streamer.cpp        TileGrid: copc-lib loader thread, tile LOD, upload, draw
     dem_layer.cpp            DEM layer (wraps DEMTessMesh)
-    dem_tess_mesh.cpp        adaptive quadtree + GPU tessellation, background rebuilds
+    dem_tess_mesh.cpp        DEM mesh: patches, GPU tessellation, background rebuilds
+    dem_quadtree.cpp         DEM level of detail: exact deviation, leaf index, balancing, edge codes
     hiz.cpp                  scene-wide Hi-Z occlusion pyramid, frustum test
     shaders.cpp              embedded GLSL + compile/link helpers
     log_capture.cpp          std::cerr → in-app log (thread-safe)
-  lasviewer.m/tests/         basic_test.cpp (formulas), scene_test.cpp (frame + camera)
+  lasviewer.m/tests/         basic_test (formulas), scene_test (frame + camera), dem_test (DEM quadtree
+                             and mesh), cli_test (command line), copc_test (COPC tiles, level of detail)
 docs/                        design notes (DEM tessellation)
+scripts/                     lint.sh (clang-format + clang-tidy), ci.sh (what CI runs)
 ```
 
 **Loading.** The scene first reads every input's header (LAS header and CRS records; GDAL for rasters), picks the scene CRS, expresses every extent in it, and fixes one `SceneFrame` from their union:
