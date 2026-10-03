@@ -12,8 +12,8 @@ GLuint linkProgram(const char* vertSrc, const char* fragSrc);
 // GL_TESS_EVALUATION_SHADER are core since GL 4.0). Returns 0 on failure
 // (check the context version with demTessSupported() before calling this —
 // see dem_tess_mesh.h).
-GLuint linkTessProgram(const char* vertSrc, const char* tcsSrc,
-                       const char* tesSrc, const char* fragSrc);
+GLuint linkTessProgram(const char* vertSrc, const char* tcsSrc, const char* tesSrc,
+                       const char* fragSrc);
 
 extern const char* kPointCloudVert;
 extern const char* kPointCloudFrag;

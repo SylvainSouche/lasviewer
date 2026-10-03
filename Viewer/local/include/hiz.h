@@ -7,11 +7,13 @@
 // design: the only failure mode is a newly revealed box missing for a frame.
 #pragma once
 #include "gl_platform.h"
+
 #include <glm/glm.hpp>
+
 #include <vector>
 
 class HiZ {
-public:
+  public:
     bool init();
     void destroy();
     // Default framebuffer depth → pyramid → CPU readback.
@@ -22,7 +24,7 @@ public:
     // lo/hi: GL-space box with the Z exaggeration already applied.
     bool isOccluded(const glm::vec3& lo, const glm::vec3& hi, const glm::mat4& VP) const;
 
-private:
+  private:
     void resizeHiZIfNeeded(int viewportW, int viewportH);
 
     GLuint hizCopyProgram_ = 0, hizDownsampleProgram_ = 0;

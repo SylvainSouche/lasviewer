@@ -12,6 +12,7 @@
 #pragma once
 #include "dem_tess_mesh.h"
 #include "layer.h"
+
 #include <vector>
 
 struct Orthophoto;
@@ -19,7 +20,7 @@ struct Orthophoto;
 enum class DemRole { Plain, Ground, AboveGround };
 
 class DemLayer : public Layer {
-public:
+  public:
     // source: produces the raster (and auxiliary raster, see DemSourceData)
     // for every build. ortho: draped as a texture when non-null.
     DemLayer(const std::string& path, const Orthophoto* ortho, DemSource source,
@@ -51,7 +52,7 @@ public:
     bool busy() const override { return mesh_.backgroundBuildInProgress(); }
     void handleAction(LayerAction a) override;
 
-private:
+  private:
     void requestRebuild();
 
     DemStyle style(const RenderContext& ctx) const;

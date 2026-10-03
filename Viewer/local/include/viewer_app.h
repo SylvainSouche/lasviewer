@@ -9,7 +9,7 @@
 #include <string>
 
 class ViewerApp {
-public:
+  public:
     ViewerApp();
     ~ViewerApp();
 
@@ -38,7 +38,7 @@ public:
     void onScroll(double dy);
     void onFramebufferSize(int w, int h);
 
-private:
+  private:
     struct UiState {
         bool showPanel = true;
         bool showLog = false;

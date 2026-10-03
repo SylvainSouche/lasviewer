@@ -7,6 +7,7 @@
 // old 1:1 transition rule it did), vertices on the DEM, no hanging edges at
 // nodata.
 #include "dem_tess_mesh.h"
+
 #include "dem_quadtree.h"
 #include "raster.h"
 // GLFW/OpenGL headers now come from dem_tess_mesh.h -> gl_platform.h (see
@@ -17,23 +18,23 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-#include <iostream>
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
-#include <utility>
 #include <functional>
+#include <iostream>
 #include <limits>
+#include <utility>
 
 #ifndef LASVIEWER_NO_OPENMP
-#  ifdef _OPENMP
-#    include <omp.h>
-#    define LASVIEWER_HAS_OPENMP 1
-#  else
-#    define LASVIEWER_HAS_OPENMP 0
-#  endif
+#ifdef _OPENMP
+#include <omp.h>
+#define LASVIEWER_HAS_OPENMP 1
 #else
-#  define LASVIEWER_HAS_OPENMP 0
+#define LASVIEWER_HAS_OPENMP 0
+#endif
+#else
+#define LASVIEWER_HAS_OPENMP 0
 #endif
 
 // Adaptive quadtree parameters. Patch count = kCoarse * 2^maxLevel
@@ -102,9 +103,8 @@ bool demTessSupported() {
         return false;
     }
     bool ok = (major > 4) || (major == 4 && minor >= 0);
-    std::cerr << "[dem-tess] GL context version " << major << "." << minor
-              << " — tessellation " << (ok ? "supported" : "NOT supported")
-              << std::endl;
+    std::cerr << "[dem-tess] GL context version " << major << "." << minor << " — tessellation "
+              << (ok ? "supported" : "NOT supported") << std::endl;
     return ok;
 }
 
@@ -115,8 +115,7 @@ bool demTessSupported() {
 // ---------------------------------------------------------------------------
 bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
                               const SceneFrame& sceneFrame, double angleThresholdDeg,
-                              int maxLevelParam,
-                              const std::atomic<bool>* cancelFlag) {
+                              int maxLevelParam, const std::atomic<bool>* cancelFlag) {
     frame = sceneFrame;
     collapseAngleDeg = angleThresholdDeg;
     maxLevel = maxLevelParam;
@@ -143,7 +142,10 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
         if (v < zMin) zMin = v;
         if (v > zMax) zMax = v;
     }
-    if (zMin > zMax) { zMin = 0; zMax = 1; }
+    if (zMin > zMax) {
+        zMin = 0;
+        zMax = 1;
+    }
     std::cerr << "[dem-tess] elevation: " << zMin << " .. " << zMax << std::endl;
 
     double minX = geo.C, minY = geo.F;
@@ -155,8 +157,6 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
     bboxMax = glm::dvec3(maxX, maxY, zMax);
     const glm::dvec3 worldCenter = frame.center;
     double invScale = 1.0 / frame.scale;
-
-
 
     // UV mode: geo-matched when the ortho is georeferenced, stretch-fit
     // over the DEM extent otherwise. The ortho is already in the scene CRS
@@ -191,14 +191,16 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
             }
         }
     }
-    auto uvFor = [&](double col, double row) -> std::pair<float,float> {
-        if (!orthoEff || orthoEff->pixels.empty()) return {0,0};
+    auto uvFor = [&](double col, double row) -> std::pair<float, float> {
+        if (!orthoEff || orthoEff->pixels.empty()) return {0, 0};
         if (orthoEff->hasGeo && !orthoStretch) {
             // Ortho pixel (fractional, pixel-centre convention) under this
             // DEM point, then texel-centre texture coordinates: pixel i's
             // centre is at (i + 0.5) / width.
-            double pc = (orthoEff->A != 0) ? ((geo.C + geo.A * col) - orthoEff->C) / orthoEff->A : 0;
-            double pr = (orthoEff->E != 0) ? ((geo.F + geo.E * row) - orthoEff->F) / orthoEff->E : 0;
+            double pc =
+                (orthoEff->A != 0) ? ((geo.C + geo.A * col) - orthoEff->C) / orthoEff->A : 0;
+            double pr =
+                (orthoEff->E != 0) ? ((geo.F + geo.E * row) - orthoEff->F) / orthoEff->E : 0;
             return {static_cast<float>((pc + 0.5) / orthoEff->width),
                     static_cast<float>((pr + 0.5) / orthoEff->height)};
         }
@@ -227,7 +229,7 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
     // texel centres (0 in the middle of the DEM, ±0.5 px at its edges). The
     // box downsample in uploadHeightmapTexture() keeps the raster's full
     // extent, so the same mapping holds for a downsampled heightmap.
-    auto demUVFor = [&](double col, double row) -> std::pair<float,float> {
+    auto demUVFor = [&](double col, double row) -> std::pair<float, float> {
         return {static_cast<float>((col + 0.5) / w), static_cast<float>((row + 0.5) / h)};
     };
 
@@ -260,8 +262,9 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
     auto logHistogram = [&](const char* what) {
         std::vector<int> counts(maxLevel + 1, 0);
         for (const QuadCell& c : leaves) counts[c.level]++;
-        std::cerr << "[dem-tess] " << what << ": " << leaves.size() << " leaves (angle="
-                  << collapseAngleDeg << "\u00b0, maxLevel=" << maxLevel << "):";
+        std::cerr << "[dem-tess] " << what << ": " << leaves.size()
+                  << " leaves (angle=" << collapseAngleDeg << "\u00b0, maxLevel=" << maxLevel
+                  << "):";
         for (int L = 0; L <= maxLevel; ++L) std::cerr << " L" << L << "=" << counts[L];
         std::cerr << std::endl;
     };
@@ -270,16 +273,19 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
     int passes = balanceLeaves(leaves, kCoarse, maxLevel, cw0, ch0);
     // Balancing can split a cell into children lying over nodata: drop those
     // (same rule as the subdivision: no centre data, no patch).
-    leaves.erase(std::remove_if(leaves.begin(), leaves.end(),
-                                [&](const QuadCell& c) {
-                                    int nd = cellNodataSamples(grid, c);
-                                    if (nd == 0) return false;
-                                    if (nd == 5) return true;
-                                    int cc = std::clamp(static_cast<int>(std::lround(c.col + c.cw * 0.5)), 0, static_cast<int>(w) - 1);
-                                    int rr = std::clamp(static_cast<int>(std::lround(c.row + c.ch * 0.5)), 0, static_cast<int>(h) - 1);
-                                    return grid.isNodata(cc, rr);
-                                }),
-                 leaves.end());
+    leaves.erase(
+        std::remove_if(leaves.begin(), leaves.end(),
+                       [&](const QuadCell& c) {
+                           int nd = cellNodataSamples(grid, c);
+                           if (nd == 0) return false;
+                           if (nd == 5) return true;
+                           int cc = std::clamp(static_cast<int>(std::lround(c.col + c.cw * 0.5)), 0,
+                                               static_cast<int>(w) - 1);
+                           int rr = std::clamp(static_cast<int>(std::lround(c.row + c.ch * 0.5)), 0,
+                                               static_cast<int>(h) - 1);
+                           return grid.isNodata(cc, rr);
+                       }),
+        leaves.end());
     if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) return false;
     logHistogram(passes > 1 ? "balanced" : "balanced (no change)");
 
@@ -287,7 +293,8 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
     // Patch buffers: one GL_PATCHES quad per leaf, corners CCW from (col,
     // row): 0=(col,row) 1=(col+cw,row) 2=(col+cw,row+ch) 3=(col,row+ch).
     // -------------------------------------------------------------------
-    patchPositions.clear(); patchUVs.clear();
+    patchPositions.clear();
+    patchUVs.clear();
     patchHeightUVs.clear();
     patchEdgeConstraint.clear();
     patchPositions.reserve(leaves.size() * 4 * 3);
@@ -303,19 +310,21 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
         patchPositions.push_back(static_cast<float>((elev - worldCenter.z) * invScale));
         patchPositions.push_back(static_cast<float>(-(wy - worldCenter.y) * invScale));
         auto [u, v] = uvFor(col, row);
-        patchUVs.push_back(u); patchUVs.push_back(v);
+        patchUVs.push_back(u);
+        patchUVs.push_back(v);
         auto [hu, hv] = demUVFor(col, row);
-        patchHeightUVs.push_back(hu); patchHeightUVs.push_back(hv);
+        patchHeightUVs.push_back(hu);
+        patchHeightUVs.push_back(hv);
     };
 
     const LeafIndex index(leaves, kCoarse, maxLevel);
     for (const QuadCell& c : leaves) {
         float codes[4];
         edgeCodes(c, index, maxLevel, codes);
-        addCorner(c.col,          c.row);
-        addCorner(c.col + c.cw,   c.row);
-        addCorner(c.col + c.cw,   c.row + c.ch);
-        addCorner(c.col,          c.row + c.ch);
+        addCorner(c.col, c.row);
+        addCorner(c.col + c.cw, c.row);
+        addCorner(c.col + c.cw, c.row + c.ch);
+        addCorner(c.col, c.row + c.ch);
         for (int k = 0; k < 4; ++k)
             patchEdgeConstraint.insert(patchEdgeConstraint.end(), codes, codes + 4);
     }
@@ -337,12 +346,15 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
 
     // GL-space bbox from patch corners (displacement can locally exceed it;
     // good enough for near/far and framing).
-    float mnx=1e30f, mxx=-1e30f, mny=1e30f, mxy=-1e30f, mnz=1e30f, mxz=-1e30f;
+    float mnx = 1e30f, mxx = -1e30f, mny = 1e30f, mxy = -1e30f, mnz = 1e30f, mxz = -1e30f;
     for (size_t i = 0; i < patchPositions.size(); i += 3) {
-        float x = patchPositions[i], y = patchPositions[i+1], z = patchPositions[i+2];
-        if (x<mnx) mnx=x; if (x>mxx) mxx=x;
-        if (y<mny) mny=y; if (y>mxy) mxy=y;
-        if (z<mnz) mnz=z; if (z>mxz) mxz=z;
+        float x = patchPositions[i], y = patchPositions[i + 1], z = patchPositions[i + 2];
+        if (x < mnx) mnx = x;
+        if (x > mxx) mxx = x;
+        if (y < mny) mny = y;
+        if (y > mxy) mxy = y;
+        if (z < mnz) mnz = z;
+        if (z > mxz) mxz = z;
     }
     glBBoxMin = glm::vec2(mnx, mnz);
     glBBoxMax = glm::vec2(mxx, mxz);
@@ -351,8 +363,7 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
 
     loaded = true;
     std::cerr << "[dem-tess] built: " << leaves.size() << " adaptive patches ("
-              << patchPositions.size() / 3 << " corner vertices, unshared)"
-              << std::endl;
+              << patchPositions.size() / 3 << " corner vertices, unshared)" << std::endl;
     return true;
 }
 
@@ -364,8 +375,7 @@ static std::vector<float> boxDownsample(const std::vector<float>& src, int& w, i
                                         int capTexels) {
     const int srcW = w, srcH = h;
     if (static_cast<int64_t>(srcW) * srcH <= capTexels) return {};
-    float scale = std::sqrt(static_cast<float>(capTexels) /
-                            (static_cast<float>(srcW) * srcH));
+    float scale = std::sqrt(static_cast<float>(capTexels) / (static_cast<float>(srcW) * srcH));
     int dstW = std::max(1, static_cast<int>(srcW * scale));
     int dstH = std::max(1, static_cast<int>(srcH * scale));
     std::vector<float> out(static_cast<size_t>(dstW) * dstH);
@@ -381,7 +391,8 @@ static std::vector<float> boxDownsample(const std::vector<float>& src, int& w, i
             int ix0 = std::max(0, static_cast<int>(sx0));
             int ix1 = std::min(srcW - 1, static_cast<int>(std::ceil(sx1)) - 1);
             if (ix1 < ix0) ix1 = ix0;
-            double sum = 0.0; int count = 0;
+            double sum = 0.0;
+            int count = 0;
             for (int sy = iy0; sy <= iy1; ++sy) {
                 for (int sx = ix0; sx <= ix1; ++sx) {
                     sum += src[static_cast<size_t>(sy) * srcW + sx];
@@ -416,8 +427,8 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
 
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, posVBO);
-    glBufferData(GL_ARRAY_BUFFER, patchPositions.size() * sizeof(float),
-                 patchPositions.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, patchPositions.size() * sizeof(float), patchPositions.data(),
+                 GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
 
@@ -429,8 +440,7 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
     // CPU upload code and the shader source for no functional benefit.
 
     glBindBuffer(GL_ARRAY_BUFFER, uvVBO);
-    glBufferData(GL_ARRAY_BUFFER, patchUVs.size() * sizeof(float),
-                 patchUVs.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, patchUVs.size() * sizeof(float), patchUVs.data(), GL_STATIC_DRAW);
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
 
@@ -438,8 +448,8 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
     // sampling only, never the orthophoto-relative one. See dem_tess_mesh.h
     // and demUVFor() in loadFromDEM() for why these must not be conflated.
     glBindBuffer(GL_ARRAY_BUFFER, heightUVVBO);
-    glBufferData(GL_ARRAY_BUFFER, patchHeightUVs.size() * sizeof(float),
-                 patchHeightUVs.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, patchHeightUVs.size() * sizeof(float), patchHeightUVs.data(),
+                 GL_STATIC_DRAW);
     glEnableVertexAttribArray(3);
     glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
 
@@ -457,7 +467,10 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
         return false;
     }
 
-    if (auxTex) { glDeleteTextures(1, &auxTex); auxTex = 0; }
+    if (auxTex) {
+        glDeleteTextures(1, &auxTex);
+        auxTex = 0;
+    }
     if (!auxData.empty()) {
         int aw = heightmapSrcW, ah = heightmapSrcH;
         std::vector<float> small = boxDownsample(auxData, aw, ah, kMaxHeightmapTexels);
@@ -489,15 +502,15 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
     if (ortho && !ortho->pixels.empty() && orthoUsable && colorTex == 0) {
         glGenTextures(1, &colorTex);
         glBindTexture(GL_TEXTURE_2D, colorTex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, ortho->width, ortho->height, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, ortho->pixels.data());
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, ortho->width, ortho->height, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, ortho->pixels.data());
         glGenerateMipmap(GL_TEXTURE_2D);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        std::cerr << "[dem-tess] color texture uploaded: " << ortho->width
-                  << "x" << ortho->height << std::endl;
+        std::cerr << "[dem-tess] color texture uploaded: " << ortho->width << "x" << ortho->height
+                  << std::endl;
     } else if (ortho && !ortho->pixels.empty() && !orthoUsable) {
         std::cerr << "[dem-tess] orthophoto present but does not overlap this "
                      "DEM — skipping texture, using elevation color ramp"
@@ -518,8 +531,8 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
 // heightmapTex.
 // ---------------------------------------------------------------------------
 bool DEMTessMesh::uploadHeightmapTexture(const std::vector<float>& glSpaceData,
-                                         const std::vector<float>& validData,
-                                         int srcW, int srcH, int capTexels) {
+                                         const std::vector<float>& validData, int srcW, int srcH,
+                                         int capTexels) {
     int dW = srcW, dH = srcH;
     std::vector<float> heights = boxDownsample(glSpaceData, dW, dH, capTexels);
     int vW = srcW, vH = srcH;
@@ -527,8 +540,8 @@ bool DEMTessMesh::uploadHeightmapTexture(const std::vector<float>& glSpaceData,
     const std::vector<float>& h = heights.empty() ? glSpaceData : heights;
     const std::vector<float>& v = valid.empty() ? validData : valid;
     if (!heights.empty()) {
-        std::cerr << "[dem-tess] heightmap downsampled: " << srcW << "x" << srcH
-                  << " -> " << dW << "x" << dH << std::endl;
+        std::cerr << "[dem-tess] heightmap downsampled: " << srcW << "x" << srcH << " -> " << dW
+                  << "x" << dH << std::endl;
     }
     std::vector<float> rg(static_cast<size_t>(dW) * dH * 2);
     for (size_t i = 0; i < static_cast<size_t>(dW) * dH; ++i) {
@@ -538,7 +551,10 @@ bool DEMTessMesh::uploadHeightmapTexture(const std::vector<float>& glSpaceData,
 
     heightmapTexW = dW;
     heightmapTexH = dH;
-    if (heightmapTex) { glDeleteTextures(1, &heightmapTex); heightmapTex = 0; }
+    if (heightmapTex) {
+        glDeleteTextures(1, &heightmapTex);
+        heightmapTex = 0;
+    }
     glGenTextures(1, &heightmapTex);
     glBindTexture(GL_TEXTURE_2D, heightmapTex);
     // 32-bit floats: heights are GL-space values near 0 with centimetre
@@ -558,9 +574,8 @@ bool DEMTessMesh::uploadHeightmapTexture(const std::vector<float>& glSpaceData,
 // DEMTessMesh::render
 // ---------------------------------------------------------------------------
 void DEMTessMesh::render(GLuint tessProgram, const glm::mat4& V, const glm::mat4& P,
-                         const glm::vec3& camPosGL, float fov, float viewportH,
-                         float zScale, float targetPixelsPerSegment,
-                         bool useDisplacement, bool showMasterEdges,
+                         const glm::vec3& camPosGL, float fov, float viewportH, float zScale,
+                         float targetPixelsPerSegment, bool useDisplacement, bool showMasterEdges,
                          const DemStyle& style) const {
     if (!valid || tessProgram == 0) return;
 
@@ -586,9 +601,10 @@ void DEMTessMesh::render(GLuint tessProgram, const glm::mat4& V, const glm::mat4
     glUniform1f(glGetUniformLocation(tessProgram, "uTransitionSegments"), transition);
     glUniform2f(glGetUniformLocation(tessProgram, "uHeightmapTexels"),
                 static_cast<float>(heightmapTexW), static_cast<float>(heightmapTexH));
-    glUniform2f(glGetUniformLocation(tessProgram, "uTexelGL"),
-                static_cast<float>(demPixelW * heightmapSrcW / std::max(heightmapTexW, 1) / frame.scale),
-                static_cast<float>(demPixelH * heightmapSrcH / std::max(heightmapTexH, 1) / frame.scale));
+    glUniform2f(
+        glGetUniformLocation(tessProgram, "uTexelGL"),
+        static_cast<float>(demPixelW * heightmapSrcW / std::max(heightmapTexW, 1) / frame.scale),
+        static_cast<float>(demPixelH * heightmapSrcH / std::max(heightmapTexH, 1) / frame.scale));
     glUniform1i(glGetUniformLocation(tessProgram, "uShade"), style.shade ? 1 : 0);
 
     glUniform1i(glGetUniformLocation(tessProgram, "uDisplacementEnabled"), useDisplacement ? 1 : 0);
@@ -714,33 +730,31 @@ void DEMTessMesh::startBackgroundBuildNow(const DemSource& source, const Orthoph
     auto cancelFlag = bgCancelFlag_;
 
     bgInProgress_ = true;
-    std::cerr << "[dem-tess] background rebuild START (angle="
-              << angleThresholdDeg << "\u00b0, maxLevel=" << maxLevelParam
-              << ")" << std::endl;
-    bgThread_ = std::thread([this, source, ortho, sceneFrame, angleThresholdDeg, maxLevelParam, cancelFlag]() {
-        // Builds an entirely separate, temporary instance — reuses
-        // loadFromDEM() completely unchanged. This touches no GL state and
-        // no member of `this`, so it's safe to run concurrently with the
-        // main thread rendering `this`'s CURRENT (old) data.
-        auto tmp = std::make_unique<DEMTessMesh>();
-        bool ok = tmp->loadFromDEM(source, ortho, sceneFrame, angleThresholdDeg, maxLevelParam,
-                                   cancelFlag.get());
-        bool wasCancelled = cancelFlag->load(std::memory_order_relaxed);
-        if (wasCancelled) {
-            std::cerr << "[dem-tess] background rebuild ABORTED (superseded)"
-                      << std::endl;
-        } else if (ok) {
-            std::cerr << "[dem-tess] background rebuild FINISHED ("
-                      << tmp->patchCount << " patches, not yet swapped in)"
-                      << std::endl;
-            std::lock_guard<std::mutex> lk(bgMutex_);
-            bgPending_ = std::move(tmp);
-            bgHasResult_ = true;
-        } else {
-            std::cerr << "[dem-tess] background rebuild FAILED" << std::endl;
-        }
-        bgInProgress_ = false;
-    });
+    std::cerr << "[dem-tess] background rebuild START (angle=" << angleThresholdDeg
+              << "\u00b0, maxLevel=" << maxLevelParam << ")" << std::endl;
+    bgThread_ = std::thread(
+        [this, source, ortho, sceneFrame, angleThresholdDeg, maxLevelParam, cancelFlag]() {
+            // Builds an entirely separate, temporary instance — reuses
+            // loadFromDEM() completely unchanged. This touches no GL state and
+            // no member of `this`, so it's safe to run concurrently with the
+            // main thread rendering `this`'s CURRENT (old) data.
+            auto tmp = std::make_unique<DEMTessMesh>();
+            bool ok = tmp->loadFromDEM(source, ortho, sceneFrame, angleThresholdDeg, maxLevelParam,
+                                       cancelFlag.get());
+            bool wasCancelled = cancelFlag->load(std::memory_order_relaxed);
+            if (wasCancelled) {
+                std::cerr << "[dem-tess] background rebuild ABORTED (superseded)" << std::endl;
+            } else if (ok) {
+                std::cerr << "[dem-tess] background rebuild FINISHED (" << tmp->patchCount
+                          << " patches, not yet swapped in)" << std::endl;
+                std::lock_guard<std::mutex> lk(bgMutex_);
+                bgPending_ = std::move(tmp);
+                bgHasResult_ = true;
+            } else {
+                std::cerr << "[dem-tess] background rebuild FAILED" << std::endl;
+            }
+            bgInProgress_ = false;
+        });
 }
 
 bool DEMTessMesh::pollBackgroundBuild(const Orthophoto* ortho) {
@@ -782,8 +796,8 @@ bool DEMTessMesh::pollBackgroundBuild(const Orthophoto* ortho) {
             loaded = true;
             releaseGeometryGL();
             swapped = uploadGPU(ortho);
-            std::cerr << "[dem-tess] background rebuild SWAPPED IN ("
-                      << patchCount << " patches)" << std::endl;
+            std::cerr << "[dem-tess] background rebuild SWAPPED IN (" << patchCount << " patches)"
+                      << std::endl;
         }
     }
     // If a newer request came in while we were building, start it now

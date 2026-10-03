@@ -7,14 +7,16 @@
 #pragma once
 #include "gl_platform.h"
 #include "scene_frame.h"
+
 #include <glm/glm.hpp>
+
 #include <string>
 
 class HiZ;
 
 // Global display settings, edited from the UI and keyboard.
 struct ViewSettings {
-    float zScale = 1.0f;          // vertical exaggeration
+    float zScale = 1.0f; // vertical exaggeration
     float pointSizeMul = 1.0f;
     float pointDensityMul = 1.0f; // screen-space point density (points layers)
     bool useOcclusion = true;     // Hi-Z culling of streamed tiles
@@ -44,17 +46,17 @@ struct RenderContext {
 // Keyboard-driven actions a layer may respond to.
 enum class LayerAction {
     ToggleColors,
-    Finer,             // F — more detail (DEM quadtree depth)
-    Coarser,           // S
-    CollapseFiner,     // I — smaller collapsing angle (DEM)
-    CollapseCoarser,   // O
-    ToggleWireframe,   // W
-    ToggleDisplacement,// A
-    ToggleMasterEdges, // G
+    Finer,              // F — more detail (DEM quadtree depth)
+    Coarser,            // S
+    CollapseFiner,      // I — smaller collapsing angle (DEM)
+    CollapseCoarser,    // O
+    ToggleWireframe,    // W
+    ToggleDisplacement, // A
+    ToggleMasterEdges,  // G
 };
 
 class Layer {
-public:
+  public:
     Layer(std::string name, std::string path) : name_(std::move(name)), path_(std::move(path)) {}
     virtual ~Layer() = default;
     Layer(const Layer&) = delete;
@@ -86,6 +88,6 @@ public:
     virtual bool busy() const { return false; }
     virtual void handleAction(LayerAction) {}
 
-private:
+  private:
     std::string name_, path_;
 };

@@ -6,6 +6,7 @@
 // guarantees both), so combining them is plain resampling, no reprojection.
 #pragma once
 #include "raster.h"
+
 #include <vector>
 
 // How to read the raster laid over the ground.

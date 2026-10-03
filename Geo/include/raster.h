@@ -7,6 +7,7 @@
 // formats).
 #pragma once
 #include <glm/glm.hpp>
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -21,8 +22,8 @@ struct WorldBounds; // scene_frame.h
 struct RasterGeo {
     double A = 1.0, D = 0.0, B = 0.0, E = -1.0, C = 0.0, F = 0.0;
     bool hasGeo = false;
-    int epsg = 0;       // horizontal EPSG code, 0 = unknown / not EPSG
-    std::string wkt;    // CRS as WKT, empty = unknown
+    int epsg = 0;    // horizontal EPSG code, 0 = unknown / not EPSG
+    std::string wkt; // CRS as WKT, empty = unknown
 };
 
 // An RGBA8 image, usually an orthophoto.
@@ -56,8 +57,8 @@ struct RasterInfo : RasterGeo {
 bool readRasterInfo(const std::string& path, RasterInfo& out);
 
 // XY extent (pixel centers) of a georeferenced raster, in its own CRS.
-void rasterExtent(const RasterGeo& g, int width, int height,
-                  double& minX, double& minY, double& maxX, double& maxY);
+void rasterExtent(const RasterGeo& g, int width, int height, double& minX, double& minY,
+                  double& maxX, double& maxY);
 
 // Reprojects an XY extent between two CRSs (dense edge sampling). Returns
 // false if either CRS is unknown or the transform fails.

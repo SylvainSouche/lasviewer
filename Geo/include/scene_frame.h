@@ -9,6 +9,7 @@
 // loaded, from the inputs' header/tag extents.
 #pragma once
 #include <glm/glm.hpp>
+
 #include <algorithm>
 #include <limits>
 #include <string>
@@ -20,11 +21,14 @@ struct WorldBounds {
 
     bool valid() const { return min.x <= max.x && min.y <= max.y; }
     void extendXY(double x0, double y0, double x1, double y1) {
-        min.x = std::min(min.x, x0); max.x = std::max(max.x, x1);
-        min.y = std::min(min.y, y0); max.y = std::max(max.y, y1);
+        min.x = std::min(min.x, x0);
+        max.x = std::max(max.x, x1);
+        min.y = std::min(min.y, y0);
+        max.y = std::max(max.y, y1);
     }
     void extendZ(double z0, double z1) {
-        min.z = std::min(min.z, z0); max.z = std::max(max.z, z1);
+        min.z = std::min(min.z, z0);
+        max.z = std::max(max.z, z1);
         hasZ = true;
     }
 };
@@ -56,8 +60,8 @@ struct SceneFrame {
         SceneFrame f;
         if (!b.valid()) return f;
         double zLo = b.hasZ ? b.min.z : 0.0, zHi = b.hasZ ? b.max.z : 0.0;
-        f.center = glm::dvec3((b.min.x + b.max.x) * 0.5, (b.min.y + b.max.y) * 0.5,
-                              (zLo + zHi) * 0.5);
+        f.center =
+            glm::dvec3((b.min.x + b.max.x) * 0.5, (b.min.y + b.max.y) * 0.5, (zLo + zHi) * 0.5);
         f.scale = glm::length(glm::dvec3(b.max.x - b.min.x, b.max.y - b.min.y, zHi - zLo));
         if (f.scale < 1e-9) f.scale = 1.0;
         f.zMin = zLo;

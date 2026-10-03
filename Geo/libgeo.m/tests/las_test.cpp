@@ -18,7 +18,9 @@
 
 namespace {
 
-bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
+bool near(double a, double b, double tol) {
+    return std::abs(a - b) <= tol;
+}
 
 // Little-endian byte writer.
 struct Bytes {
@@ -36,7 +38,10 @@ struct Bytes {
     template <typename T> void patch(size_t at, T v) { std::memcpy(b.data() + at, &v, sizeof(T)); }
 };
 
-struct Pt { double x, y, z; uint16_t r, g, b; };
+struct Pt {
+    double x, y, z;
+    uint16_t r, g, b;
+};
 
 const double kScale = 0.01, kOffX = 991000.0, kOffY = 6557000.0, kOffZ = 0.0;
 
@@ -45,9 +50,9 @@ Bytes header(uint8_t minor, uint16_t headerSize, uint32_t vlrCount, uint8_t form
              uint16_t recordLength, uint32_t legacyCount, const std::vector<Pt>& pts) {
     Bytes h;
     h.text("LASF", 4);
-    h.put<uint16_t>(0);  // file source id
-    h.put<uint16_t>(0);  // global encoding
-    h.zeros(16);         // GUID
+    h.put<uint16_t>(0); // file source id
+    h.put<uint16_t>(0); // global encoding
+    h.zeros(16);        // GUID
     h.put<uint8_t>(1);
     h.put<uint8_t>(minor);
     h.text("lasviewer test", 32);
@@ -55,23 +60,33 @@ Bytes header(uint8_t minor, uint16_t headerSize, uint32_t vlrCount, uint8_t form
     h.put<uint16_t>(1);
     h.put<uint16_t>(2026);
     h.put<uint16_t>(headerSize);
-    h.put<uint32_t>(0);  // offset to point data, patched later (byte 96)
+    h.put<uint32_t>(0); // offset to point data, patched later (byte 96)
     h.put<uint32_t>(vlrCount);
     h.put<uint8_t>(format);
     h.put<uint16_t>(recordLength);
     h.put<uint32_t>(legacyCount);
     for (int i = 0; i < 5; ++i) h.put<uint32_t>(i == 0 ? legacyCount : 0);
-    h.put<double>(kScale); h.put<double>(kScale); h.put<double>(kScale);
-    h.put<double>(kOffX); h.put<double>(kOffY); h.put<double>(kOffZ);
+    h.put<double>(kScale);
+    h.put<double>(kScale);
+    h.put<double>(kScale);
+    h.put<double>(kOffX);
+    h.put<double>(kOffY);
+    h.put<double>(kOffZ);
     double minx = 1e30, maxx = -1e30, miny = 1e30, maxy = -1e30, minz = 1e30, maxz = -1e30;
     for (const Pt& p : pts) {
-        minx = std::min(minx, p.x); maxx = std::max(maxx, p.x);
-        miny = std::min(miny, p.y); maxy = std::max(maxy, p.y);
-        minz = std::min(minz, p.z); maxz = std::max(maxz, p.z);
+        minx = std::min(minx, p.x);
+        maxx = std::max(maxx, p.x);
+        miny = std::min(miny, p.y);
+        maxy = std::max(maxy, p.y);
+        minz = std::min(minz, p.z);
+        maxz = std::max(maxz, p.z);
     }
-    h.put<double>(maxx); h.put<double>(minx);
-    h.put<double>(maxy); h.put<double>(miny);
-    h.put<double>(maxz); h.put<double>(minz);
+    h.put<double>(maxx);
+    h.put<double>(minx);
+    h.put<double>(maxy);
+    h.put<double>(miny);
+    h.put<double>(maxz);
+    h.put<double>(minz);
     return h;
 }
 
@@ -88,12 +103,14 @@ void pointRecord(Bytes& f, const Pt& p, int format) {
     f.put<int32_t>(static_cast<int32_t>(std::lround((p.y - kOffY) / kScale)));
     f.put<int32_t>(static_cast<int32_t>(std::lround((p.z - kOffZ) / kScale)));
     if (format == 2) {
-        f.zeros(8);                          // intensity .. point source id: 20 bytes so far
-    } else {                                 // format 7
-        f.zeros(10);                         // intensity .. point source id
-        f.put<double>(0.0);                  // GPS time: 30 bytes so far
+        f.zeros(8);         // intensity .. point source id: 20 bytes so far
+    } else {                // format 7
+        f.zeros(10);        // intensity .. point source id
+        f.put<double>(0.0); // GPS time: 30 bytes so far
     }
-    f.put<uint16_t>(p.r); f.put<uint16_t>(p.g); f.put<uint16_t>(p.b);
+    f.put<uint16_t>(p.r);
+    f.put<uint16_t>(p.g);
+    f.put<uint16_t>(p.b);
 }
 
 const std::vector<Pt> kPts = {
@@ -111,7 +128,8 @@ std::string writeLas12(const std::string& path) {
                reinterpret_cast<const char*>(keys) + sizeof(keys));
     f.patch<uint32_t>(96, static_cast<uint32_t>(f.b.size()));
     for (const Pt& p : kPts) pointRecord(f, p, 2);
-    std::ofstream(path, std::ios::binary).write(f.b.data(), static_cast<std::streamsize>(f.b.size()));
+    std::ofstream(path, std::ios::binary)
+        .write(f.b.data(), static_cast<std::streamsize>(f.b.size()));
     return path;
 }
 
@@ -119,11 +137,11 @@ std::string writeLas12(const std::string& path) {
 // the point data.
 std::string writeLas14(const std::string& path, const std::string& wkt) {
     Bytes f = header(4, 375, 0, 7, 36, 0, kPts);
-    f.put<uint64_t>(0);                        // start of waveform data
+    f.put<uint64_t>(0); // start of waveform data
     size_t evlrOffsetAt = f.b.size();
-    f.put<uint64_t>(0);                        // start of first EVLR, patched below
-    f.put<uint32_t>(1);                        // number of EVLRs
-    f.put<uint64_t>(kPts.size());              // point count (64-bit)
+    f.put<uint64_t>(0);           // start of first EVLR, patched below
+    f.put<uint32_t>(1);           // number of EVLRs
+    f.put<uint64_t>(kPts.size()); // point count (64-bit)
     for (int i = 0; i < 15; ++i) f.put<uint64_t>(i == 0 ? kPts.size() : 0);
     f.patch<uint32_t>(96, static_cast<uint32_t>(f.b.size()));
     for (const Pt& p : kPts) pointRecord(f, p, 7);
@@ -134,7 +152,8 @@ std::string writeLas14(const std::string& path, const std::string& wkt) {
     f.put<uint64_t>(wkt.size() + 1);
     f.text("", 32);
     f.text(wkt.c_str(), wkt.size() + 1);
-    std::ofstream(path, std::ios::binary).write(f.b.data(), static_cast<std::streamsize>(f.b.size()));
+    std::ofstream(path, std::ios::binary)
+        .write(f.b.data(), static_cast<std::streamsize>(f.b.size()));
     return path;
 }
 
@@ -172,9 +191,9 @@ ATF_TEST_CASE_BODY(test_record_layout) {
     ATF_REQUIRE(lasRecordLayout(2, 26, glm::dvec3(1), glm::dvec3(0), l) && l.rgbOffset == 20);
     ATF_REQUIRE(lasRecordLayout(3, 34, glm::dvec3(1), glm::dvec3(0), l) && l.rgbOffset == 28);
     ATF_REQUIRE(lasRecordLayout(6, 30, glm::dvec3(1), glm::dvec3(0), l) && !l.hasRGB());
-    ATF_REQUIRE(lasRecordLayout(0x80 | 7, 36, glm::dvec3(1), glm::dvec3(0), l) &&
-                l.format == 7 && l.rgbOffset == 30);
-    ATF_REQUIRE(!lasRecordLayout(2, 20, glm::dvec3(1), glm::dvec3(0), l)); // too short
+    ATF_REQUIRE(lasRecordLayout(0x80 | 7, 36, glm::dvec3(1), glm::dvec3(0), l) && l.format == 7 &&
+                l.rgbOffset == 30);
+    ATF_REQUIRE(!lasRecordLayout(2, 20, glm::dvec3(1), glm::dvec3(0), l));  // too short
     ATF_REQUIRE(!lasRecordLayout(11, 80, glm::dvec3(1), glm::dvec3(0), l)); // unknown
 }
 
@@ -219,7 +238,8 @@ ATF_TEST_CASE_BODY(test_no_crs) {
     Bytes f = header(2, 227, 0, 2, 26, 3, kPts);
     f.patch<uint32_t>(96, static_cast<uint32_t>(f.b.size()));
     for (const Pt& p : kPts) pointRecord(f, p, 2);
-    std::ofstream("nocrs.las", std::ios::binary).write(f.b.data(), static_cast<std::streamsize>(f.b.size()));
+    std::ofstream("nocrs.las", std::ios::binary)
+        .write(f.b.data(), static_cast<std::streamsize>(f.b.size()));
     ATF_REQUIRE(lasCrsWkt("nocrs.las").empty());
     CloudHeader h;
     ATF_REQUIRE(readCloudHeader("nocrs.las", h));
@@ -233,20 +253,22 @@ ATF_TEST_CASE_BODY(test_no_crs) {
 // (r = low 16 bits, g = high 16 bits) so kept points can be identified.
 ATF_TEST_CASE_WITHOUT_HEAD(test_thinning_streamed);
 ATF_TEST_CASE_BODY(test_thinning_streamed) {
-    const int side = 1600;                    // 2.56M points, scan order
-    const double step = 0.05;                 // 80 m x 80 m
-    std::vector<Pt> corners = {{991000.0, 6557000.0, 10.0, 0, 0, 0},
-                               {991000.0 + step * (side - 1), 6557000.0 + step * (side - 1), 20.0, 0, 0, 0}};
+    const int side = 1600;    // 2.56M points, scan order
+    const double step = 0.05; // 80 m x 80 m
+    std::vector<Pt> corners = {
+        {991000.0, 6557000.0, 10.0, 0, 0, 0},
+        {991000.0 + step * (side - 1), 6557000.0 + step * (side - 1), 20.0, 0, 0, 0}};
     const uint32_t n = static_cast<uint32_t>(side) * side;
     Bytes f = header(2, 227, 0, 2, 26, n, corners);
     f.patch<uint32_t>(96, static_cast<uint32_t>(f.b.size()));
     f.b.reserve(f.b.size() + static_cast<size_t>(n) * 26);
     for (uint32_t i = 0; i < n; ++i) {
-        Pt p{991000.0 + step * (i % side), 6557000.0 + step * (i / side), 10.0 + (i % 7),
+        Pt p{991000.0 + step * (i % side),      6557000.0 + step * (i / side),  10.0 + (i % 7),
              static_cast<uint16_t>(i & 0xFFFF), static_cast<uint16_t>(i >> 16), 0};
         pointRecord(f, p, 2);
     }
-    std::ofstream("big.las", std::ios::binary).write(f.b.data(), static_cast<std::streamsize>(f.b.size()));
+    std::ofstream("big.las", std::ios::binary)
+        .write(f.b.data(), static_cast<std::streamsize>(f.b.size()));
 
     CloudHeader h;
     ATF_REQUIRE(readCloudHeader("big.las", h));
@@ -265,7 +287,7 @@ ATF_TEST_CASE_BODY(test_thinning_streamed) {
     // order, which the old cut-off at exactly 2M dropped) is represented.
     uint32_t prev = 0;
     int lastRows = 0;
-    std::vector<int> blocks(16, 0);           // 4 x 4 blocks of the area
+    std::vector<int> blocks(16, 0); // 4 x 4 blocks of the area
     for (size_t k = 0; k < a.pointCount; ++k) {
         uint32_t r = static_cast<uint32_t>(std::lround(a.colors[k * 3] * 65535.0));
         uint32_t g = static_cast<uint32_t>(std::lround(a.colors[k * 3 + 1] * 65535.0));
@@ -275,8 +297,10 @@ ATF_TEST_CASE_BODY(test_thinning_streamed) {
         if (idx / side >= side - 3) ++lastRows;
         blocks[(idx / side) * 4 / side * 4 + (idx % side) * 4 / side]++;
     }
-    ATF_REQUIRE(lastRows > side / 2);        // about one grid row (~1400 cells)
-    for (int c : blocks) ATF_REQUIRE(std::abs(c - static_cast<int>(a.pointCount / 16)) < static_cast<int>(a.pointCount / 160));
+    ATF_REQUIRE(lastRows > side / 2); // about one grid row (~1400 cells)
+    for (int c : blocks)
+        ATF_REQUIRE(std::abs(c - static_cast<int>(a.pointCount / 16)) <
+                    static_cast<int>(a.pointCount / 160));
 }
 
 ATF_INIT_TEST_CASES(tcs) {

@@ -6,35 +6,35 @@
 // drains results in update(), uploads them, and requests refinements based
 // on each tile's projected on-screen size.
 #include "copc_streamer.h"
-#include "raster.h"
+
 #include "hiz.h"
-#include "layer.h"
-
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
-
 #include "las_format.h"
+#include "layer.h"
+#include "raster.h"
 
 #include <copc-lib/geometry/box.hpp>
 #include <copc-lib/hierarchy/node.hpp>
 #include <copc-lib/io/copc_reader.hpp>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <list>
 #include <map>
-#include <tuple>
-#include <iostream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 static glm::vec3 elevationColorRamp(float t) {
     t = glm::clamp(t, 0.0f, 1.0f);
-    static const glm::vec3 kStops[5] = {
-        {0.1f, 0.2f, 0.8f}, {0.2f, 0.7f, 0.9f}, {0.3f, 0.8f, 0.3f},
-        {0.95f, 0.85f, 0.2f}, {0.85f, 0.25f, 0.2f}
-    };
+    static const glm::vec3 kStops[5] = {{0.1f, 0.2f, 0.8f},
+                                        {0.2f, 0.7f, 0.9f},
+                                        {0.3f, 0.8f, 0.3f},
+                                        {0.95f, 0.85f, 0.2f},
+                                        {0.85f, 0.25f, 0.2f}};
     float s = t * 4.0f;
     int si = static_cast<int>(s);
     if (si >= 4) return kStops[4];
@@ -104,7 +104,8 @@ struct TileGrid::CopcSource {
     using Key = std::tuple<int, int, int, int>; // octree d, x, y, z
     static constexpr size_t kCacheBytes = 512u << 20;
     std::list<Key> lru;
-    std::map<Key, std::pair<std::shared_ptr<const std::vector<char>>, std::list<Key>::iterator>> cache;
+    std::map<Key, std::pair<std::shared_ptr<const std::vector<char>>, std::list<Key>::iterator>>
+        cache;
     size_t cacheBytes = 0;
 };
 
@@ -121,8 +122,8 @@ TileGrid::LoadResult TileGrid::loadTile(const LoadRequest& req) {
     // last row/column also takes the header's max edge.
     const bool lastX = req.maxX >= fileMaxX, lastY = req.maxY >= fileMaxY;
     auto inside = [&](double x, double y) {
-        return x >= req.minX && (x < req.maxX || (lastX && x <= req.maxX)) &&
-               y >= req.minY && (y < req.maxY || (lastY && y <= req.maxY));
+        return x >= req.minX && (x < req.maxX || (lastX && x <= req.maxX)) && y >= req.minY &&
+               (y < req.maxY || (lastY && y <= req.maxY));
     };
 
     const double zRange = std::max(frame.zMax - frame.zMin, 1e-6);
@@ -188,8 +189,7 @@ void TileGrid::requestLoad(int tileIndex, double resolution) {
     ++pendingLoads;
     {
         std::lock_guard<std::mutex> lk(mtx);
-        requests.push_back({tileIndex, resolution,
-                            t.minX, t.minY, t.minZ, t.maxX, t.maxY, t.maxZ});
+        requests.push_back({tileIndex, resolution, t.minX, t.minY, t.minZ, t.maxX, t.maxY, t.maxZ});
     }
     cv.notify_one();
 }
@@ -198,8 +198,8 @@ void TileGrid::requestLoad(int tileIndex, double resolution) {
 // init / stop
 // ===========================================================================
 
-void TileGrid::init(const std::string& path, const WorldBounds& bounds,
-                    const Orthophoto* ortho, const SceneFrame& sceneFrame) {
+void TileGrid::init(const std::string& path, const WorldBounds& bounds, const Orthophoto* ortho,
+                    const SceneFrame& sceneFrame) {
     orthoPtr = ortho;
     copcPath = path;
     frame = sceneFrame;
@@ -216,12 +216,14 @@ void TileGrid::init(const std::string& path, const WorldBounds& bounds,
     for (int gy = 0; gy < gridY; ++gy) {
         for (int gx = 0; gx < gridX; ++gx) {
             Tile& t = tiles[gy * gridX + gx];
-            t.gx = gx; t.gy = gy;
+            t.gx = gx;
+            t.gy = gy;
             t.minX = minX + gx * tileW;
             t.maxX = t.minX + tileW;
             t.minY = minY + gy * tileH;
             t.maxY = t.minY + tileH;
-            t.minZ = minZ; t.maxZ = maxZ;
+            t.minZ = minZ;
+            t.maxZ = maxZ;
             t.glMin = frame.toGL(t.minX, t.maxY, t.minZ);
             t.glMax = frame.toGL(t.maxX, t.minY, t.maxZ);
             t.glCenter = (t.glMin + t.glMax) * 0.5f;
@@ -233,8 +235,8 @@ void TileGrid::init(const std::string& path, const WorldBounds& bounds,
 
     // Coarse first pass: every tile at ~500 points, for a fast first frame.
     double coarseRes = std::clamp(std::sqrt(tileW * tileH / 500.0), 1.0, 50.0);
-    std::cerr << "[stream] coarse pass (resolution=" << coarseRes << "m) for "
-              << tiles.size() << " tiles" << std::endl;
+    std::cerr << "[stream] coarse pass (resolution=" << coarseRes << "m) for " << tiles.size()
+              << " tiles" << std::endl;
     for (size_t i = 0; i < tiles.size(); ++i) requestLoad(static_cast<int>(i), coarseRes);
 }
 
@@ -273,13 +275,13 @@ static void computeTilePCA(Tile& t, const std::vector<float>& pos) {
     // PCA: compute the inertia axes (principal components) of the tile.
     glm::vec3 centroid(0.0f);
     for (size_t i = 0; i < static_cast<size_t>(t.pointCount); ++i) {
-        centroid += glm::vec3(pos[i*3], pos[i*3+1], pos[i*3+2]);
+        centroid += glm::vec3(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
     }
     centroid /= static_cast<float>(t.pointCount);
 
-    float cov[3][3] = {{0,0,0},{0,0,0},{0,0,0}};
+    float cov[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
     for (size_t i = 0; i < static_cast<size_t>(t.pointCount); ++i) {
-        glm::vec3 p(pos[i*3], pos[i*3+1], pos[i*3+2]);
+        glm::vec3 p(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
         p -= centroid;
         cov[0][0] += p.x * p.x;
         cov[0][1] += p.x * p.y;
@@ -296,17 +298,25 @@ static void computeTilePCA(Tile& t, const std::vector<float>& pos) {
         }
 
     // Jacobi eigendecomposition for a 3×3 symmetric matrix.
-    float eigenvectors[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
+    float eigenvectors[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     for (int iter = 0; iter < 50; ++iter) {
         int p = 0, q = 1;
         float maxOff = std::abs(cov[0][1]);
-        if (std::abs(cov[0][2]) > maxOff) { p = 0; q = 2; maxOff = std::abs(cov[0][2]); }
-        if (std::abs(cov[1][2]) > maxOff) { p = 1; q = 2; maxOff = std::abs(cov[1][2]); }
+        if (std::abs(cov[0][2]) > maxOff) {
+            p = 0;
+            q = 2;
+            maxOff = std::abs(cov[0][2]);
+        }
+        if (std::abs(cov[1][2]) > maxOff) {
+            p = 1;
+            q = 2;
+            maxOff = std::abs(cov[1][2]);
+        }
         if (maxOff < 1e-10f) break;
 
         float theta = (cov[q][q] - cov[p][p]) / (2.0f * cov[p][q]);
-        float tanTheta = (theta >= 0 ? 1.0f : -1.0f) /
-                   (std::abs(theta) + std::sqrt(theta * theta + 1.0f));
+        float tanTheta =
+            (theta >= 0 ? 1.0f : -1.0f) / (std::abs(theta) + std::sqrt(theta * theta + 1.0f));
         float c = 1.0f / std::sqrt(tanTheta * tanTheta + 1.0f);
         float s = tanTheta * c;
 
@@ -339,9 +349,12 @@ static void computeTilePCA(Tile& t, const std::vector<float>& pos) {
             }
         }
     }
-    t.principalAxis1 = glm::vec3(eigenvectors[0][order[0]], eigenvectors[1][order[0]], eigenvectors[2][order[0]]);
-    t.principalAxis2 = glm::vec3(eigenvectors[0][order[1]], eigenvectors[1][order[1]], eigenvectors[2][order[1]]);
-    t.principalAxis3 = glm::vec3(eigenvectors[0][order[2]], eigenvectors[1][order[2]], eigenvectors[2][order[2]]);
+    t.principalAxis1 =
+        glm::vec3(eigenvectors[0][order[0]], eigenvectors[1][order[0]], eigenvectors[2][order[0]]);
+    t.principalAxis2 =
+        glm::vec3(eigenvectors[0][order[1]], eigenvectors[1][order[1]], eigenvectors[2][order[1]]);
+    t.principalAxis3 =
+        glm::vec3(eigenvectors[0][order[2]], eigenvectors[1][order[2]], eigenvectors[2][order[2]]);
     t.obbExtent1 = std::sqrt(std::max(0.0f, cov[order[0]][order[0]]));
     t.obbExtent2 = std::sqrt(std::max(0.0f, cov[order[1]][order[1]]));
     t.obbExtent3 = std::sqrt(std::max(0.0f, cov[order[2]][order[2]]));
@@ -374,19 +387,18 @@ void TileGrid::uploadTile(Tile& t, LoadResult& r) {
     glBindVertexArray(t.vao);
     glGenBuffers(1, &t.vboPos);
     glBindBuffer(GL_ARRAY_BUFFER, t.vboPos);
-    glBufferData(GL_ARRAY_BUFFER, r.positions.size() * sizeof(float),
-                 r.positions.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, r.positions.size() * sizeof(float), r.positions.data(),
+                 GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glGenBuffers(1, &t.vboCol);
     glBindBuffer(GL_ARRAY_BUFFER, t.vboCol);
-    glBufferData(GL_ARRAY_BUFFER, r.colors.size() * sizeof(float),
-                 r.colors.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, r.colors.size() * sizeof(float), r.colors.data(), GL_STATIC_DRAW);
     if (!r.orthoColors.empty()) {
         glGenBuffers(1, &t.vboOrthoCol);
         glBindBuffer(GL_ARRAY_BUFFER, t.vboOrthoCol);
-        glBufferData(GL_ARRAY_BUFFER, r.orthoColors.size() * sizeof(float),
-                     r.orthoColors.data(), GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, r.orthoColors.size() * sizeof(float), r.orthoColors.data(),
+                     GL_STATIC_DRAW);
     }
     glBindBuffer(GL_ARRAY_BUFFER, (useOrthoColors && t.vboOrthoCol) ? t.vboOrthoCol : t.vboCol);
     glEnableVertexAttribArray(1);
@@ -410,19 +422,22 @@ void TileGrid::setUseOrthoColors(bool useOrtho) {
 // tile's projected OBB area. Returns 0 to leave the tile as is.
 // ===========================================================================
 
-double TileGrid::desiredResolution(const Tile& t, const glm::vec3& camPos,
-                                   float fov, float viewportH) {
+double TileGrid::desiredResolution(const Tile& t, const glm::vec3& camPos, float fov,
+                                   float viewportH) {
     if (t.pointCount == 0) return 0.0;
     float dist = std::max(glm::length(t.glCenter - camPos), 1e-6f);
 
     float pxPerUnit = viewportH / (2.0f * dist * std::tan(glm::radians(fov) * 0.5f));
     glm::vec3 sight = glm::normalize(t.glCenter - camPos);
 
-    struct Face { glm::vec3 normal; float dim1, dim2; };
+    struct Face {
+        glm::vec3 normal;
+        float dim1, dim2;
+    };
     Face faces[3] = {
-        { t.principalAxis1, 2.0f * t.obbExtent2, 2.0f * t.obbExtent3 },
-        { t.principalAxis2, 2.0f * t.obbExtent1, 2.0f * t.obbExtent3 },
-        { t.principalAxis3, 2.0f * t.obbExtent1, 2.0f * t.obbExtent2 },
+        {t.principalAxis1, 2.0f * t.obbExtent2, 2.0f * t.obbExtent3},
+        {t.principalAxis2, 2.0f * t.obbExtent1, 2.0f * t.obbExtent3},
+        {t.principalAxis3, 2.0f * t.obbExtent1, 2.0f * t.obbExtent2},
     };
     float projectedAreaGL = 0.0f;
     for (const auto& f : faces) {
@@ -485,7 +500,8 @@ void TileGrid::render(const RenderContext& ctx) {
     glUniformMatrix4fv(glGetUniformLocation(prog, "uProj"), 1, GL_FALSE, glm::value_ptr(ctx.proj));
     glUniform1f(glGetUniformLocation(prog, "uViewportH"), ctx.viewportH);
     glUniform1f(glGetUniformLocation(prog, "uZScale"), vs.zScale);
-    glUniform1f(glGetUniformLocation(prog, "uTanHalfFov"), std::tan(glm::radians(ctx.fovDeg) * 0.5f));
+    glUniform1f(glGetUniformLocation(prog, "uTanHalfFov"),
+                std::tan(glm::radians(ctx.fovDeg) * 0.5f));
     glUniform1f(glGetUniformLocation(prog, "uDisableSubsampling"), 0.0f);
     glUniform1f(glGetUniformLocation(prog, "uOrtho"), ctx.ortho ? 1.0f : 0.0f);
     glUniform1f(glGetUniformLocation(prog, "uOrthoHeight"), ctx.orthoHeight);
@@ -506,8 +522,8 @@ void TileGrid::render(const RenderContext& ctx) {
             ++culledTiles;
             continue;
         }
-        float tileDensity = (t.pointSpacing > 1e-10f)
-            ? 1.0f / (t.pointSpacing * t.pointSpacing) : 1e15f;
+        float tileDensity =
+            (t.pointSpacing > 1e-10f) ? 1.0f / (t.pointSpacing * t.pointSpacing) : 1e15f;
         glUniform1f(densityLoc, tileDensity);
         glBindVertexArray(t.vao);
         glDrawArrays(GL_POINTS, 0, t.pointCount);

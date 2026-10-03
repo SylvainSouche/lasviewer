@@ -1,5 +1,6 @@
 // copc_layer.cpp — see copc_layer.h.
 #include "copc_layer.h"
+
 #include "raster.h"
 
 #include <glm/gtc/type_ptr.hpp>
@@ -9,8 +10,8 @@
 
 CopcLayer::CopcLayer(const std::string& path, const WorldBounds& bounds, uint64_t pointCount,
                      const Orthophoto* ortho)
-    : Layer(path.substr(path.find_last_of('/') + 1), path),
-      worldBounds_(bounds), filePointCount_(pointCount), ortho_(ortho) {}
+    : Layer(path.substr(path.find_last_of('/') + 1), path), worldBounds_(bounds),
+      filePointCount_(pointCount), ortho_(ortho) {}
 
 CopcLayer::~CopcLayer() {
     grid_.reset(); // joins the loader thread, frees tile buffers
@@ -55,8 +56,9 @@ void CopcLayer::renderOverlay(const RenderContext& ctx) {
             if (!t.hasGeometry() || t.inFlight != (pass == 1)) continue;
             const glm::vec3& a = t.glMin;
             const glm::vec3& b = t.glMax;
-            const glm::vec3 c[8] = {{a.x, a.y, a.z}, {b.x, a.y, a.z}, {b.x, a.y, b.z}, {a.x, a.y, b.z},
-                                    {a.x, b.y, a.z}, {b.x, b.y, a.z}, {b.x, b.y, b.z}, {a.x, b.y, b.z}};
+            const glm::vec3 c[8] = {{a.x, a.y, a.z}, {b.x, a.y, a.z}, {b.x, a.y, b.z},
+                                    {a.x, a.y, b.z}, {a.x, b.y, a.z}, {b.x, b.y, a.z},
+                                    {b.x, b.y, b.z}, {a.x, b.y, b.z}};
             for (int e : kEdges) verts.insert(verts.end(), {c[e].x, c[e].y, c[e].z});
         }
         if (pass == 0) loadedVerts = verts.size() / 3;
@@ -104,8 +106,8 @@ void CopcLayer::drawUI() {
     } else {
         ImGui::TextDisabled("Colors: elevation");
     }
-    ImGui::Text("Drawn: %.2fM pts in %zu tiles (%zu culled)",
-                grid_->drawnPoints / 1e6, grid_->drawnTiles, grid_->culledTiles);
+    ImGui::Text("Drawn: %.2fM pts in %zu tiles (%zu culled)", grid_->drawnPoints / 1e6,
+                grid_->drawnTiles, grid_->culledTiles);
     ImGui::Text("File: %.1fM pts", filePointCount_ / 1e6);
 }
 
@@ -118,8 +120,8 @@ std::string CopcLayer::status() const {
     }
     char buf[96];
     if (loading > 0)
-        std::snprintf(buf, sizeof(buf), "%d/%zu tiles, %d loading", loaded,
-                      grid_->tiles.size(), loading);
+        std::snprintf(buf, sizeof(buf), "%d/%zu tiles, %d loading", loaded, grid_->tiles.size(),
+                      loading);
     else
         std::snprintf(buf, sizeof(buf), "%.2fM pts drawn", grid_->drawnPoints / 1e6);
     return buf;

@@ -2,12 +2,13 @@
 #pragma once
 #include "copc_streamer.h"
 #include "layer.h"
+
 #include <memory>
 
 struct Orthophoto;
 
 class CopcLayer : public Layer {
-public:
+  public:
     // bounds: header extent. ortho: used for coloring when non-null.
     CopcLayer(const std::string& path, const WorldBounds& bounds, uint64_t pointCount,
               const Orthophoto* ortho);
@@ -26,7 +27,7 @@ public:
     bool busy() const override;
     void handleAction(LayerAction a) override;
 
-private:
+  private:
     WorldBounds worldBounds_;
     uint64_t filePointCount_;
     const Orthophoto* ortho_;

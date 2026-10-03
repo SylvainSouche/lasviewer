@@ -512,8 +512,8 @@ GLuint linkProgram(const char* vertSrc, const char* fragSrc) {
     return p;
 }
 
-GLuint linkTessProgram(const char* vertSrc, const char* tcsSrc,
-                       const char* tesSrc, const char* fragSrc) {
+GLuint linkTessProgram(const char* vertSrc, const char* tcsSrc, const char* tesSrc,
+                       const char* fragSrc) {
     GLuint v = compileShader(GL_VERTEX_SHADER, vertSrc);
     GLuint tc = compileShader(GL_TESS_CONTROL_SHADER, tcsSrc);
     GLuint te = compileShader(GL_TESS_EVALUATION_SHADER, tesSrc);

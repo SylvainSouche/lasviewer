@@ -5,14 +5,16 @@
 #include "gl_platform.h" // GLFW mouse button constants
 #include "scene_frame.h"
 
+#include <atf-c++.hpp>
+
 #include <cmath>
 #include <cstdio>
 
-#include <atf-c++.hpp>
-
 #define CHECK(cond) ATF_REQUIRE(cond)
 
-static bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
+static bool near(double a, double b, double tol) {
+    return std::abs(a - b) <= tol;
+}
 
 // World → GL → world round trip, in Lambert-93-sized coordinates.
 ATF_TEST_CASE_WITHOUT_HEAD(test_frame_roundtrip);

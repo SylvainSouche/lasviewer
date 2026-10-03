@@ -1,5 +1,6 @@
 // raster.cpp — raster I/O through GDAL. See raster.h.
 #include "raster.h"
+
 #include "point_cloud.h"
 #include "scene_frame.h"
 
@@ -19,20 +20,22 @@
 #include <thread>
 
 #ifndef LASVIEWER_NO_OPENMP
-#  ifdef _OPENMP
-#    include <omp.h>
-#    define LASVIEWER_HAS_OPENMP 1
-#  else
-#    define LASVIEWER_HAS_OPENMP 0
-#  endif
+#ifdef _OPENMP
+#include <omp.h>
+#define LASVIEWER_HAS_OPENMP 1
 #else
-#  define LASVIEWER_HAS_OPENMP 0
+#define LASVIEWER_HAS_OPENMP 0
+#endif
+#else
+#define LASVIEWER_HAS_OPENMP 0
 #endif
 
 namespace {
 
 struct DatasetCloser {
-    void operator()(GDALDataset* d) const { if (d) GDALClose(GDALDataset::ToHandle(d)); }
+    void operator()(GDALDataset* d) const {
+        if (d) GDALClose(GDALDataset::ToHandle(d));
+    }
 };
 using DatasetPtr = std::unique_ptr<GDALDataset, DatasetCloser>;
 
@@ -83,8 +86,7 @@ void readGeo(GDALDataset& ds, RasterGeo& g) {
     double gt[6];
     bool identity = true;
     if (ds.GetGeoTransform(gt) == CE_None) {
-        identity = gt[0] == 0 && gt[1] == 1 && gt[2] == 0 && gt[3] == 0 && gt[4] == 0 &&
-                   gt[5] == 1;
+        identity = gt[0] == 0 && gt[1] == 1 && gt[2] == 0 && gt[3] == 0 && gt[4] == 0 && gt[5] == 1;
         if (!identity) setGeoFromTransform(gt, g);
     }
     if (const OGRSpatialReference* srs = ds.GetSpatialRef()) {
@@ -103,23 +105,25 @@ bool crsDiffers(const RasterGeo& g, const std::string& sceneWkt) {
 
 // Rotated/sheared grids are warped to north-up too: the rest of the viewer
 // assumes B = D = 0.
-bool isRotated(const RasterGeo& g) { return g.hasGeo && (g.B != 0.0 || g.D != 0.0); }
+bool isRotated(const RasterGeo& g) {
+    return g.hasGeo && (g.B != 0.0 || g.D != 0.0);
+}
 
 bool needsWarp(const RasterGeo& g, const std::string& sceneWkt) {
     return crsDiffers(g, sceneWkt) || isRotated(g);
 }
 
-
-
 std::string describeCRS(const RasterGeo& g);
 
 std::string warpReason(const RasterGeo& g, const std::string& sceneWkt) {
-    if (crsDiffers(g, sceneWkt)) return "reprojecting from " + describeCRS(g) + " into the scene CRS";
+    if (crsDiffers(g, sceneWkt))
+        return "reprojecting from " + describeCRS(g) + " into the scene CRS";
     return "resampling a rotated grid to north-up";
 }
 
 std::string describeCRS(const RasterGeo& g) {
-    return g.epsg ? "EPSG:" + std::to_string(g.epsg) : (g.wkt.empty() ? "unknown CRS" : "custom CRS");
+    return g.epsg ? "EPSG:" + std::to_string(g.epsg)
+                  : (g.wkt.empty() ? "unknown CRS" : "custom CRS");
 }
 
 // gdalwarp, bilinear, to a north-up grid in the scene's horizontal CRS
@@ -223,8 +227,8 @@ bool readRasterInfo(const std::string& path, RasterInfo& out) {
     return true;
 }
 
-void rasterExtent(const RasterGeo& g, int width, int height,
-                  double& minX, double& minY, double& maxX, double& maxY) {
+void rasterExtent(const RasterGeo& g, int width, int height, double& minX, double& minY,
+                  double& maxX, double& maxY) {
     minX = minY = std::numeric_limits<double>::max();
     maxX = maxY = std::numeric_limits<double>::lowest();
     const double cols[2] = {0.0, static_cast<double>(width - 1)};
@@ -233,8 +237,10 @@ void rasterExtent(const RasterGeo& g, int width, int height,
         for (double r : rows) {
             double x = g.C + g.A * c + g.B * r;
             double y = g.F + g.D * c + g.E * r;
-            minX = std::min(minX, x); maxX = std::max(maxX, x);
-            minY = std::min(minY, y); maxY = std::max(maxY, y);
+            minX = std::min(minX, x);
+            maxX = std::max(maxX, x);
+            minY = std::min(minY, y);
+            maxY = std::max(maxY, y);
         }
     }
 }
@@ -276,13 +282,16 @@ bool loadOrthophoto(const std::string& path, Orthophoto& ortho, int maxPixels,
 
     const int srcW = src->GetRasterXSize(), srcH = src->GetRasterYSize();
     const int bands = src->GetRasterCount();
-    double scale = std::min(1.0, std::sqrt(static_cast<double>(maxPixels) /
-                                           (static_cast<double>(srcW) * srcH)));
+    double scale = std::min(
+        1.0, std::sqrt(static_cast<double>(maxPixels) / (static_cast<double>(srcW) * srcH)));
     int dstW = std::max(1, static_cast<int>(srcW * scale));
     int dstH = std::max(1, static_cast<int>(srcH * scale));
 
     int colorBands[3] = {1, 1, 1};
-    if (bands >= 3) { colorBands[1] = 2; colorBands[2] = 3; }
+    if (bands >= 3) {
+        colorBands[1] = 2;
+        colorBands[2] = 3;
+    }
     int alphaBand = 0;
     for (int b = 1; b <= bands; ++b)
         if (src->GetRasterBand(b)->GetColorInterpretation() == GCI_AlphaBand) alphaBand = b;
@@ -297,14 +306,12 @@ bool loadOrthophoto(const std::string& path, Orthophoto& ortho, int maxPixels,
     GDALRasterIOExtraArg extra;
     INIT_RASTERIO_EXTRA_ARG(extra);
     extra.eResampleAlg = (dstW < srcW) ? GRIORA_Average : GRIORA_NearestNeighbour;
-    CPLErr err = src->RasterIO(GF_Read, 0, 0, srcW, srcH, ortho.pixels.data(), dstW, dstH,
-                               GDT_Byte, 3, colorBands, 4, static_cast<GSpacing>(dstW) * 4, 1,
-                               &extra);
+    CPLErr err = src->RasterIO(GF_Read, 0, 0, srcW, srcH, ortho.pixels.data(), dstW, dstH, GDT_Byte,
+                               3, colorBands, 4, static_cast<GSpacing>(dstW) * 4, 1, &extra);
     if (err == CE_None && alphaBand) {
         err = src->GetRasterBand(alphaBand)->RasterIO(GF_Read, 0, 0, srcW, srcH,
-                                                     ortho.pixels.data() + 3, dstW, dstH,
-                                                     GDT_Byte, 4, static_cast<GSpacing>(dstW) * 4,
-                                                     &extra);
+                                                      ortho.pixels.data() + 3, dstW, dstH, GDT_Byte,
+                                                      4, static_cast<GSpacing>(dstW) * 4, &extra);
     }
     if (err != CE_None) {
         std::cerr << "ERROR: reading pixels of " << path << " failed" << std::endl;
@@ -315,8 +322,10 @@ bool loadOrthophoto(const std::string& path, Orthophoto& ortho, int maxPixels,
     double gt[6];
     if (ortho.hasGeo && src->GetGeoTransform(gt) == CE_None) {
         double sx = static_cast<double>(srcW) / dstW, sy = static_cast<double>(srcH) / dstH;
-        gt[1] *= sx; gt[4] *= sx;
-        gt[2] *= sy; gt[5] *= sy;
+        gt[1] *= sx;
+        gt[4] *= sx;
+        gt[2] *= sy;
+        gt[5] *= sy;
         setGeoFromTransform(gt, ortho);
     }
     std::cerr << "[raster] orthophoto " << srcW << "x" << srcH;
@@ -383,10 +392,9 @@ bool loadDEM(const std::string& path, DemRaster& dem, const std::string& sceneWk
             decoded->SetSpatialRef(ds->GetSpatialRef());
             GDALRasterBand* b = decoded->GetRasterBand(1);
             b->SetNoDataValue(-9999.0);
-            if (b->RasterIO(GF_Write, 0, 0, w, h, dem.elevations.data(), w, h, GDT_Float32, 0,
-                            0, nullptr) != CE_None) {
-                std::cerr << "ERROR: preparing " << path << " for reprojection failed"
-                          << std::endl;
+            if (b->RasterIO(GF_Write, 0, 0, w, h, dem.elevations.data(), w, h, GDT_Float32, 0, 0,
+                            nullptr) != CE_None) {
+                std::cerr << "ERROR: preparing " << path << " for reprojection failed" << std::endl;
                 return false;
             }
             src = decoded.get();
@@ -456,8 +464,7 @@ glm::vec3 sampleOrthoBilinear(const Orthophoto& ortho, double col, double row) {
                 ortho.pixels[i + 2] / 255.0f};
     };
     glm::vec3 c00 = s(x0, y0), c10 = s(x1, y0), c01 = s(x0, y1), c11 = s(x1, y1);
-    return c00 * (1 - fx) * (1 - fy) + c10 * fx * (1 - fy) + c01 * (1 - fx) * fy +
-           c11 * fx * fy;
+    return c00 * (1 - fx) * (1 - fy) + c10 * fx * (1 - fy) + c01 * (1 - fx) * fy + c11 * fx * fy;
 }
 
 void colorizeFromOrthophoto(PointCloud& cloud, const Orthophoto& ortho) {
@@ -484,7 +491,7 @@ void colorizeFromOrthophoto(PointCloud& cloud, const Orthophoto& ortho) {
 #if LASVIEWER_HAS_OPENMP
     int nThreads = std::max(1, std::min(static_cast<int>(cloud.pointCount / 100000),
                                         static_cast<int>(std::thread::hardware_concurrency())));
-    #pragma omp parallel for num_threads(nThreads) schedule(static)
+#pragma omp parallel for num_threads(nThreads) schedule(static)
 #endif
     for (size_t i = 0; i < cloud.pointCount; ++i) {
         double gx = cloud.positions[i * 3 + 0];

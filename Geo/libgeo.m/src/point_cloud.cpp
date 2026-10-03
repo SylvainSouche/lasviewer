@@ -6,20 +6,19 @@
 //   - readCloudHeader() : header-only bounds, point count, CRS.
 #include "point_cloud.h"
 
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-
 #include "las_format.h"
 #include "raster.h"
 
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <lazperf/readers.hpp>
 
-#include <iostream>
-#include <cmath>
 #include <algorithm>
+#include <cmath>
+#include <iostream>
 #include <limits>
-#include <vector>
 #include <string>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // Elevation color ramp (blue → cyan → green → yellow → red).
@@ -29,11 +28,11 @@ static glm::vec3 elevationColor(double z, double zMin, double zRange) {
     double t = (z - zMin) / zRange;
     t = glm::clamp(t, 0.0, 1.0);
     static const glm::vec3 kStops[5] = {
-        {0.1f, 0.2f, 0.8f},  // blue
-        {0.2f, 0.7f, 0.9f},  // cyan
-        {0.3f, 0.8f, 0.3f},  // green
-        {0.95f, 0.85f, 0.2f},// yellow
-        {0.85f, 0.25f, 0.2f} // red
+        {0.1f, 0.2f, 0.8f},   // blue
+        {0.2f, 0.7f, 0.9f},   // cyan
+        {0.3f, 0.8f, 0.3f},   // green
+        {0.95f, 0.85f, 0.2f}, // yellow
+        {0.85f, 0.25f, 0.2f}  // red
     };
     float s = static_cast<float>(t) * 4.0f;
     int i = static_cast<int>(s);
@@ -67,8 +66,8 @@ bool loadPointCloud(const std::string& path, const SceneFrame& frame, PointCloud
     const lazperf::header14& hdr = reader.header();
     LasRecordLayout layout;
     if (!layoutOf(hdr, layout)) {
-        std::cerr << "ERROR: unsupported LAS point format "
-                  << int(hdr.point_format_id & 0x3F) << " in " << path << std::endl;
+        std::cerr << "ERROR: unsupported LAS point format " << int(hdr.point_format_id & 0x3F)
+                  << " in " << path << std::endl;
         return false;
     }
     const bool hasRGB = layout.hasRGB();
@@ -93,8 +92,10 @@ bool loadPointCloud(const std::string& path, const SceneFrame& frame, PointCloud
             scan.readPoint(rec.data());
             double x, y, z;
             layout.xyz(rec.data(), x, y, z);
-            minX = std::min(minX, x); maxX = std::max(maxX, x);
-            minY = std::min(minY, y); maxY = std::max(maxY, y);
+            minX = std::min(minX, x);
+            maxX = std::max(maxX, x);
+            minY = std::min(minY, y);
+            maxY = std::max(maxY, y);
         }
     }
     int gridX = 1, gridY = 1;
@@ -128,8 +129,13 @@ bool loadPointCloud(const std::string& path, const SceneFrame& frame, PointCloud
         double x, y, z;
         layout.xyz(rec.data(), x, y, z);
         glm::dvec3 p(x, y, z);
-        if (first) { bmin = bmax = p; first = false; }
-        else { bmin = glm::min(bmin, p); bmax = glm::max(bmax, p); }
+        if (first) {
+            bmin = bmax = p;
+            first = false;
+        } else {
+            bmin = glm::min(bmin, p);
+            bmax = glm::max(bmax, p);
+        }
         if (thin) {
             int cx = std::clamp(static_cast<int>((x - minX) / cellSize), 0, gridX - 1);
             int cy = std::clamp(static_cast<int>((y - minY) / cellSize), 0, gridY - 1);
@@ -189,9 +195,7 @@ bool loadPointCloud(const std::string& path, const SceneFrame& frame, PointCloud
         cloud.glBBoxMinY = minY;
         cloud.glBBoxMaxY = maxY;
         float glArea = (maxX - minX) * (maxZ - minZ);
-        cloud.glDensity = (glArea > 1e-12f)
-            ? static_cast<float>(cloud.pointCount) / glArea
-            : 1.0f;
+        cloud.glDensity = (glArea > 1e-12f) ? static_cast<float>(cloud.pointCount) / glArea : 1.0f;
     }
 
     std::cerr << "Loaded " << cloud.pointCount << " points from " << path << "\n"

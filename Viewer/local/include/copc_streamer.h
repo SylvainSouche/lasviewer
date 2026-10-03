@@ -11,7 +11,9 @@
 #pragma once
 #include "gl_platform.h"
 #include "scene_frame.h"
+
 #include <glm/glm.hpp>
+
 #include <condition_variable>
 #include <deque>
 #include <memory>
@@ -20,7 +22,7 @@
 #include <thread>
 #include <vector>
 
-struct Orthophoto; // raster.h
+struct Orthophoto;    // raster.h
 struct RenderContext; // layer.h
 
 struct Tile {
@@ -30,9 +32,9 @@ struct Tile {
     float glRadius = 0.0f;
 
     // Main-thread-only state.
-    bool inFlight = false;          // a load request is queued or running
-    int failures = 0;               // consecutive failed loads (backs off resolution)
-    float loadedResolution = 0.0f;  // 0 = nothing loaded
+    bool inFlight = false;         // a load request is queued or running
+    int failures = 0;              // consecutive failed loads (backs off resolution)
+    float loadedResolution = 0.0f; // 0 = nothing loaded
     GLuint vao = 0, vboPos = 0, vboCol = 0, vboOrthoCol = 0; // vboOrthoCol: 0 without ortho
     GLsizei pointCount = 0;
 
@@ -79,9 +81,9 @@ struct TileGrid {
 
     // bounds: the file's header extent. ortho may be null (elevation colors
     // only); it must outlive the grid.
-    void init(const std::string& copcPath, const WorldBounds& bounds,
-              const Orthophoto* ortho, const SceneFrame& frame);
-    TileGrid();  // out of line: CopcSource is only complete in the .cpp
+    void init(const std::string& copcPath, const WorldBounds& bounds, const Orthophoto* ortho,
+              const SceneFrame& frame);
+    TileGrid(); // out of line: CopcSource is only complete in the .cpp
     ~TileGrid();
     void requestLoad(int tileIndex, double resolution);
     void uploadTile(Tile& t, LoadResult& r);

@@ -7,17 +7,16 @@
 #include <cstdio>
 #include <iostream>
 
-DemLayer::DemLayer(const std::string& path, const Orthophoto* ortho, DemSource source,
-                   DemRole role, const char* kindName)
-    : Layer(path.substr(path.find_last_of('/') + 1), path),
-      ortho_(ortho),
-      source_(std::move(source)),
-      role_(role),
-      kindName_(kindName) {
+DemLayer::DemLayer(const std::string& path, const Orthophoto* ortho, DemSource source, DemRole role,
+                   const char* kindName)
+    : Layer(path.substr(path.find_last_of('/') + 1), path), ortho_(ortho),
+      source_(std::move(source)), role_(role), kindName_(kindName) {
     if (role_ != DemRole::AboveGround) opacity_ = 1.0f;
 }
 
-DemLayer::~DemLayer() { mesh_.destroy(); }
+DemLayer::~DemLayer() {
+    mesh_.destroy();
+}
 
 bool DemLayer::load(const SceneFrame& frame) {
     frame_ = frame;
@@ -42,7 +41,9 @@ GLBounds DemLayer::bounds() const {
     return b;
 }
 
-void DemLayer::update(const RenderContext&) { mesh_.pollBackgroundBuild(ortho_); }
+void DemLayer::update(const RenderContext&) {
+    mesh_.pollBackgroundBuild(ortho_);
+}
 
 DemStyle DemLayer::style(const RenderContext& ctx) const {
     DemStyle st;
@@ -63,9 +64,8 @@ void DemLayer::render(const RenderContext& ctx) {
     if (!ctx.programs->tess) return;
     DemStyle st = style(ctx);
     auto draw = [&] {
-        mesh_.render(ctx.programs->tess, ctx.view, ctx.proj, ctx.camPos, ctx.fovDeg,
-                     ctx.viewportH, ctx.settings->zScale, pixelsPerSegment_, displacement_,
-                     masterEdges_, st);
+        mesh_.render(ctx.programs->tess, ctx.view, ctx.proj, ctx.camPos, ctx.fovDeg, ctx.viewportH,
+                     ctx.settings->zScale, pixelsPerSegment_, displacement_, masterEdges_, st);
     };
     if (wireframe_) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     if (st.opacity < 1.0f) {

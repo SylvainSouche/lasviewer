@@ -41,7 +41,8 @@ std::vector<float> resampleOnGrid(const DemRaster& src, const RasterGeo& grid, i
                 sum += v * ws[k];
                 wsum += ws[k];
             }
-            if (wsum > 0.0) out[static_cast<size_t>(r) * width + c] = static_cast<float>(sum / wsum);
+            if (wsum > 0.0)
+                out[static_cast<size_t>(r) * width + c] = static_cast<float>(sum / wsum);
         }
     }
     return out;

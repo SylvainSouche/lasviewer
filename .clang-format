@@ -1,5 +1,7 @@
-# .clang-format — clang-format configuration for lasviewer
-# Run with: make fmt
+# .clang-format — lasviewer's formatting, enforced by scripts/lint.sh (and
+# CI): `scripts/lint.sh` checks, `scripts/lint.sh --fix` reformats. Pinned
+# to clang-format 22 (CI installs the same version; other versions may
+# format slightly differently).
 
 BasedOnStyle: LLVM
 
@@ -12,39 +14,31 @@ TabWidth: 4
 UseTab: Never
 
 BreakBeforeBraces: Attach
-AllowShortIfStatementsOnASingleLine: Never
-AllowShortLoopsOnASingleLine: false
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
 AllowShortFunctionsOnASingleLine: Inline
 AllowShortBlocksOnASingleLine: Never
 
 AlignAfterOpenBracket: Align
-AlignConsecutiveAssignments: true
+AlignConsecutiveAssignments: false
 AlignConsecutiveDeclarations: false
 AlignTrailingComments: true
 AlignEscapedNewlines: Left
 
 SortIncludes: true
 IncludeBlocks: Regroup
-IncludeCategories:
-  - Regex: '^"pdal/'
-    Priority: 2
-  - Regex: '^<GLFW/'
-    Priority: 3
-  - Regex: '^<OpenGL/'
-    Priority: 3
-  - Regex: '^<glm/'
-    Priority: 3
-  - Regex: '^<tiff'
-    Priority: 3
-  - Regex: '^<.*\..*>'  # system headers with dots (e.g. <iostream>)
-    Priority: 5
-  - Regex: '^<.*>'      # system headers without dots
-    Priority: 4
-  - Regex: '.*'         # local headers
+IncludeCategories:            # blocks: project, third-party libraries, standard library
+  - Regex: '^"'
     Priority: 1
+  - Regex: '^<(GLFW|OpenGL|glm|lazperf|copc-lib|imgui|atf-c\+\+)[/.>]'
+    Priority: 2
+  - Regex: '^<(gdal|cpl_|ogr_|omp)'
+    Priority: 2
+  - Regex: '^<'
+    Priority: 3
 
 SpaceBeforeParens: ControlStatements
-SpacesBeforeTrailingComments: 2
+SpacesBeforeTrailingComments: 1
 
 PointerAlignment: Left
 DerivePointerAlignment: false

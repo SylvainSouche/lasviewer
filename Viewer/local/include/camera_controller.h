@@ -12,7 +12,7 @@
 #include "scene_frame.h"
 
 class CameraController {
-public:
+  public:
     explicit CameraController(Camera& cam) : cam_(cam) {}
 
     void onMouseButton(int button, bool pressed, double x, double y, double time);
@@ -31,7 +31,7 @@ public:
     bool takePickRequest(double& x, double& y);
     bool anyButtonDown() const { return left_ || right_ || middle_; }
 
-private:
+  private:
     Camera& cam_;
     bool left_ = false, right_ = false, middle_ = false, shift_ = false;
     double lastX_ = 0.0, lastY_ = 0.0;

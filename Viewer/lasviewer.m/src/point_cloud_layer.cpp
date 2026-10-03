@@ -1,5 +1,6 @@
 // point_cloud_layer.cpp — see point_cloud_layer.h.
 #include "point_cloud_layer.h"
+
 #include "raster.h"
 
 #include <glm/gtc/type_ptr.hpp>
@@ -28,8 +29,8 @@ bool PointCloudLayer::load(const SceneFrame& frame) {
     glBindVertexArray(vao_);
     glGenBuffers(1, &vboPos_);
     glBindBuffer(GL_ARRAY_BUFFER, vboPos_);
-    glBufferData(GL_ARRAY_BUFFER, cloud_.positions.size() * sizeof(float),
-                 cloud_.positions.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, cloud_.positions.size() * sizeof(float), cloud_.positions.data(),
+                 GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glGenBuffers(1, &vboCol_);
@@ -72,7 +73,8 @@ void PointCloudLayer::render(const RenderContext& ctx) {
     glUniform1f(glGetUniformLocation(prog, "uViewportH"), ctx.viewportH);
     glUniform1f(glGetUniformLocation(prog, "uZScale"), vs.zScale);
     glUniform1f(glGetUniformLocation(prog, "uTargetPixelSpacing"), 2.83f);
-    glUniform1f(glGetUniformLocation(prog, "uTanHalfFov"), std::tan(glm::radians(ctx.fovDeg) * 0.5f));
+    glUniform1f(glGetUniformLocation(prog, "uTanHalfFov"),
+                std::tan(glm::radians(ctx.fovDeg) * 0.5f));
     glUniform1f(glGetUniformLocation(prog, "uDensity"), cloud_.glDensity);
     glUniform1f(glGetUniformLocation(prog, "uDensityMul"), vs.pointDensityMul);
     glUniform1f(glGetUniformLocation(prog, "uDisableSubsampling"), 0.0f);

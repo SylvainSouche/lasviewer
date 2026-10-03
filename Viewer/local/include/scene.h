@@ -3,6 +3,7 @@
 #include "height_model.h"
 #include "layer.h"
 #include "scene_frame.h"
+
 #include <functional>
 #include <memory>
 #include <string>
@@ -24,7 +25,7 @@ struct LoadPlan {
     // quadtree level; <= 0 / < 0 keep the defaults (1°, 5).
     double demAngle = 0.0;
     int demMaxLevel = -1;
-    std::string ortho;               // optional GeoTIFF orthophoto
+    std::string ortho; // optional GeoTIFF orthophoto
 };
 
 struct Scene {

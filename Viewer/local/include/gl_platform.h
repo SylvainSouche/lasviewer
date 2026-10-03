@@ -9,8 +9,8 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #ifdef __APPLE__
-#  define GL_SILENCE_DEPRECATION 1
-#  include <OpenGL/gl3.h>
+#define GL_SILENCE_DEPRECATION 1
+#include <OpenGL/gl3.h>
 #endif
 // Linux/Windows: not verified here (no GPU/GLFW in this sandbox — see
 // specs.md §12.3). GLFW_INCLUDE_NONE + linking -lGL (Linux, see Makefile)

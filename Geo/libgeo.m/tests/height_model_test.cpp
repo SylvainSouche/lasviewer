@@ -2,14 +2,16 @@
 // (atf-c++; no files).
 #include "height_model.h"
 
+#include <atf-c++.hpp>
+
 #include <cmath>
 #include <vector>
 
-#include <atf-c++.hpp>
-
 #define CHECK(cond) ATF_REQUIRE(cond)
 
-static bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
+static bool near(double a, double b, double tol) {
+    return std::abs(a - b) <= tol;
+}
 
 // A north-up raster with pixel centers at (x0 + c*res, y0 - r*res).
 static DemRaster makeRaster(int w, int h, double x0, double y0, double res,

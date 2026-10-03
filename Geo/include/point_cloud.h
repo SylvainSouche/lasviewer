@@ -1,14 +1,16 @@
 // point_cloud.h — LAZ/LAS point cloud loading (laz-perf)
 #pragma once
 #include "scene_frame.h"
+
 #include <glm/glm.hpp>
+
+#include <cstdint>
 #include <string>
 #include <vector>
-#include <cstdint>
 
 struct PointCloud {
-    std::vector<float> positions;   // GL space, 3 floats/point
-    std::vector<float> colors;      // file RGB, or elevation ramp
+    std::vector<float> positions; // GL space, 3 floats/point
+    std::vector<float> colors;    // file RGB, or elevation ramp
     bool hasRGB = false;
     std::vector<float> orthoColors;
     bool hasOrthoColors = false;
@@ -29,10 +31,10 @@ struct PointCloud {
 bool loadPointCloud(const std::string& path, const SceneFrame& frame, PointCloud& cloud);
 
 struct CloudHeader {
-    WorldBounds bounds;   // hasZ = true
+    WorldBounds bounds; // hasZ = true
     uint64_t pointCount = 0;
-    int epsg = 0;         // horizontal CRS, 0 = unknown
-    std::string wkt;      // full CRS, empty = unknown
+    int epsg = 0;    // horizontal CRS, 0 = unknown
+    std::string wkt; // full CRS, empty = unknown
 };
 // Header-only read: bounds, point count, CRS. Throws lazperf::error (a
 // std::runtime_error) on an unreadable file.

@@ -29,7 +29,9 @@
 #include "gl_platform.h"
 #include "raster.h"
 #include "scene_frame.h"
+
 #include <glm/glm.hpp>
+
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -59,7 +61,7 @@ enum class DemAux {
 
 // Per-draw appearance.
 struct DemStyle {
-    float opacity = 1.0f;   // < 1: blended (the caller sets the blend state)
+    float opacity = 1.0f; // < 1: blended (the caller sets the blend state)
     DemAux auxMode = DemAux::None;
     float threshold = 0.0f; // meters, see DemAux
     bool shade = true;      // hill-shading from the heightmap gradient
@@ -72,9 +74,9 @@ bool demTessSupported();
 struct DEMTessMesh {
     // --- CPU patch data (loadFromDEM; no GL context needed). Flat,
     //     non-indexed: 4 corner vertices per patch. ---
-    std::vector<float> patchPositions;      // 3 floats/vertex
-    std::vector<float> patchUVs;            // 2 floats/vertex, orthophoto-relative
-    std::vector<float> patchHeightUVs;      // 2 floats/vertex, DEM-raster-relative
+    std::vector<float> patchPositions; // 3 floats/vertex
+    std::vector<float> patchUVs;       // 2 floats/vertex, orthophoto-relative
+    std::vector<float> patchHeightUVs; // 2 floats/vertex, DEM-raster-relative
     // Per-patch edge constraint replicated to all 4 corners (x=bottom,
     // y=right, z=top, w=left): 0 = free tessellation, 1 = LOD transition.
     std::vector<float> patchEdgeConstraint; // 4 floats/vertex
@@ -93,8 +95,8 @@ struct DEMTessMesh {
     glm::dvec3 bboxMin{0.0}, bboxMax{0.0};
     glm::vec2 glBBoxMin{0.0f}, glBBoxMax{0.0f};
     float glBBoxMinY = 0.0f, glBBoxMaxY = 0.0f;
-    bool loaded = false;   // CPU data ready
-    bool valid = false;    // GPU resources ready
+    bool loaded = false; // CPU data ready
+    bool valid = false;  // GPU resources ready
     // False when the orthophoto has geo tags that do not overlap the DEM (even
     // after CRS reprojection): the mesh then uses the elevation ramp rather
     // than stretching unrelated imagery over it. An ortho with no geo tags at
@@ -108,8 +110,8 @@ struct DEMTessMesh {
 
     GLuint vao = 0, posVBO = 0, uvVBO = 0, heightUVVBO = 0, edgeConstraintVBO = 0;
     GLuint heightmapTex = 0;
-    GLuint auxTex = 0;     // 0 = no auxiliary raster
-    GLuint colorTex = 0;   // orthophoto; 0 = elevation ramp
+    GLuint auxTex = 0;       // 0 = no auxiliary raster
+    GLuint colorTex = 0;     // orthophoto; 0 = elevation ramp
     bool showTexture = true; // false = elevation ramp even with a colorTex
 
     // Step 1 (no GL context needed). ortho may be null. cancelFlag, if set
@@ -125,17 +127,16 @@ struct DEMTessMesh {
 
     // Box-filter downsample to capTexels if needed, then (re)upload.
     bool uploadHeightmapTexture(const std::vector<float>& glSpaceData,
-                                const std::vector<float>& validData,
-                                int srcW, int srcH, int capTexels);
+                                const std::vector<float>& validData, int srcW, int srcH,
+                                int capTexels);
     bool hasAux() const { return auxTex != 0; }
 
     // tessProgram: shaders::linkTessProgram(kMeshTessVert, kMeshTessControl,
     // kMeshTessEval, kMeshFrag). fov in degrees. targetPixelsPerSegment sets
     // triangle density (smaller = denser).
     void render(GLuint tessProgram, const glm::mat4& V, const glm::mat4& P,
-                const glm::vec3& camPosGL, float fov, float viewportH,
-                float zScale, float targetPixelsPerSegment,
-                bool useDisplacement, bool showMasterEdges,
+                const glm::vec3& camPosGL, float fov, float viewportH, float zScale,
+                float targetPixelsPerSegment, bool useDisplacement, bool showMasterEdges,
                 const DemStyle& style = {}) const;
 
     void releaseGeometryGL(); // everything except the color texture
@@ -156,7 +157,7 @@ struct DEMTessMesh {
 
     ~DEMTessMesh();
 
-private:
+  private:
     void startBackgroundBuildNow(const DemSource& source, const Orthophoto* ortho,
                                  const SceneFrame& frame, double angleThresholdDeg,
                                  int maxLevelParam);

@@ -1,7 +1,7 @@
 // viewer_ui.cpp — ImGui panels: layers, view settings, log, help.
-#include "raster.h"
-#include "log_capture.h"
 #include "dem_layer.h"
+#include "log_capture.h"
+#include "raster.h"
 #include "viewer_app.h"
 
 #include <imgui.h>
@@ -79,10 +79,9 @@ void ViewerApp::drawMainPanel() {
             ImGui::Separator();
             std::string name = scene_.orthoPath.substr(scene_.orthoPath.find_last_of('/') + 1);
             ImGui::TextDisabled("Orthophoto: %s", name.c_str());
-            ImGui::TextDisabled("  %dx%d px%s", scene_.ortho->width, scene_.ortho->height,
-                                scene_.ortho->epsg
-                                    ? (", EPSG:" + std::to_string(scene_.ortho->epsg)).c_str()
-                                    : "");
+            ImGui::TextDisabled(
+                "  %dx%d px%s", scene_.ortho->width, scene_.ortho->height,
+                scene_.ortho->epsg ? (", EPSG:" + std::to_string(scene_.ortho->epsg)).c_str() : "");
         }
     }
 
@@ -168,8 +167,10 @@ void ViewerApp::drawLogWindow() {
             const std::string& l = lines[static_cast<size_t>(i)];
             bool isError = l.rfind("ERROR", 0) == 0;
             bool isWarn = l.rfind("WARNING", 0) == 0;
-            if (isError) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
-            else if (isWarn) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.3f, 1.0f));
+            if (isError)
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+            else if (isWarn)
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.3f, 1.0f));
             ImGui::TextUnformatted(l.c_str());
             if (isError || isWarn) ImGui::PopStyleColor();
         }
@@ -184,9 +185,9 @@ void ViewerApp::drawLogWindow() {
 
 void ViewerApp::drawHelpWindow() {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f,
-                                   vp->WorkPos.y + vp->WorkSize.y * 0.5f),
-                            ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowPos(
+        ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f),
+        ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
     if (!ImGui::Begin("Controls", &ui_.showHelp, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::End();
         return;

@@ -1,18 +1,18 @@
 // camera_controller.cpp — see camera_controller.h.
 #include "camera_controller.h"
+
 #include "gl_platform.h"
 
 #include <cmath>
 
 namespace {
-constexpr float kRotateSpeed = 0.005f;     // radians per pixel
+constexpr float kRotateSpeed = 0.005f; // radians per pixel
 constexpr float kPitchLimit = 1.55f;
-constexpr double kDoubleClickInterval = 0.4; // s
+constexpr double kDoubleClickInterval = 0.4;  // s
 constexpr double kDoubleClickTolerance = 5.0; // px
 
 glm::vec3 orbitOffset(float yaw, float pitch, float distance) {
-    return glm::vec3(distance * std::cos(pitch) * std::sin(yaw),
-                     distance * std::sin(pitch),
+    return glm::vec3(distance * std::cos(pitch) * std::sin(yaw), distance * std::sin(pitch),
                      distance * std::cos(pitch) * std::cos(yaw));
 }
 } // namespace
@@ -58,8 +58,8 @@ void CameraController::onCursor(double x, double y, float viewportH) {
         glm::vec3 fwd = glm::normalize(cam_.target - cam_.position());
         glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0, 1, 0)));
         glm::vec3 up = glm::cross(right, fwd);
-        float worldPerPixel = 2.0f * cam_.distance * std::tan(glm::radians(cam_.fov) * 0.5f) /
-                              viewportH;
+        float worldPerPixel =
+            2.0f * cam_.distance * std::tan(glm::radians(cam_.fov) * 0.5f) / viewportH;
         cam_.target += (right * -dx + up * dy) * worldPerPixel;
     }
 }
@@ -98,8 +98,12 @@ void CameraController::home(const GLBounds& bounds, float zScale) {
     cam_.distance = std::max(1.3f * glm::length(hi - lo), 1e-3f);
 }
 
-void CameraController::topView() { cam_.pitch = 1.54f; }
-void CameraController::sideView() { cam_.pitch = 0.05f; }
+void CameraController::topView() {
+    cam_.pitch = 1.54f;
+}
+void CameraController::sideView() {
+    cam_.pitch = 0.05f;
+}
 
 bool CameraController::focusOn(const glm::vec3& p) {
     glm::vec3 toEye = cam_.position() - p;

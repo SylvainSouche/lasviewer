@@ -45,14 +45,14 @@ int cellNodataSamples(const DemGrid& g, const QuadCell& cell);
 // point lookups (the previous linear scan made balancing and edge
 // classification quadratic in the leaf count).
 class LeafIndex {
-public:
+  public:
     LeafIndex(const std::vector<QuadCell>& leaves, int coarse, int maxLevel);
     // Level of the leaf covering finest-level cell (fx, fy), or -1 if that
     // cell is outside the grid or has no leaf (dropped as nodata).
     int levelAt(int fx, int fy) const;
     int finestCount() const { return finest_; }
 
-private:
+  private:
     static uint64_t key(int level, int ix, int iy) {
         return (static_cast<uint64_t>(level) << 56) | (static_cast<uint64_t>(ix) << 28) |
                static_cast<uint64_t>(iy);
@@ -90,6 +90,6 @@ void fillNodataNearest(std::vector<float>& elev, const std::vector<uint8_t>& nod
 // spans at most maxSpanPx pixels (so GPU tessellation, capped at 64 segments
 // per edge, can still reach every DEM pixel), or at maxLevel. Entirely
 // nodata cells are dropped.
-std::vector<QuadCell> buildLeaves(const DemGrid& g, int coarse, int maxLevel,
-                                  double angleDeg, double pixelW, double pixelH,
-                                  double maxSpanPx, const std::atomic<bool>* cancel = nullptr);
+std::vector<QuadCell> buildLeaves(const DemGrid& g, int coarse, int maxLevel, double angleDeg,
+                                  double pixelW, double pixelH, double maxSpanPx,
+                                  const std::atomic<bool>* cancel = nullptr);
