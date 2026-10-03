@@ -1,0 +1,37 @@
+# CI: build, unit tests and lint on Linux (no GPU needed: the tests don't
+# draw). The steps are scripts/ci.sh, which reproduces this on any
+# Debian/Ubuntu machine or container.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prerequisites (apt)
+        run: sudo scripts/ci.sh deps
+      - name: Cache fetched sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            GIS/*/distfiles
+            GUI/*/distfiles
+          key: distfiles-${{ hashFiles('**/distinfo') }}
+      - name: Build and test (bmake, bmake test)
+        run: scripts/ci.sh build
+      - name: Lint (clang-format and clang-tidy 22)
+        run: scripts/ci.sh lint
+      - name: Test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            */*/build/*/runs/*/test-results.xml
+            */*/build/*/runs/*/*.log
+          if-no-files-found: ignore

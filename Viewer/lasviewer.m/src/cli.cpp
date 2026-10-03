@@ -1,5 +1,6 @@
 // cli.cpp — see cli.h.
 #include "cli.h"
+
 #include "raster.h"
 
 #include <algorithm>
@@ -34,33 +35,33 @@ bool parseNumbers(const char* s, double* out, int n) {
 void printUsage(const char* prog, std::ostream& out) {
     out << "lasviewer " << kLasviewerVersion << " — LiDAR + DEM + orthophoto 3D viewer\n\n"
         << "Usage: " << prog << " [options] <file>...\n\n"
-              << "Files (any number, shown together in one scene):\n"
-              << "  *.las, *.laz       point cloud, loaded in full (thinned to 2M points)\n"
-              << "  *.copc.laz         point cloud, streamed tile by tile\n"
-              << "  *.tif, *.tiff      DEM/DSM elevation raster (Float/Int), or the orthophoto\n"
-              << "                     if it is 8-bit RGB(A) imagery\n\n"
-              << "Options:\n"
-              << "  -o <ortho.tif>     orthophoto used to color points and texture DEMs\n"
-              << "  -d <dem.tif>       add a DEM explicitly (needed for 8-bit Terrain-RGB DEMs)\n"
-              << "  -dtm, -mnt <f.tif> same as -d: a terrain model, ground of -dhm / -dsm\n"
-              << "  -dhm, -mnh <f.tif> height model (height above ground): what stands on the\n"
-              << "                     DTM it overlaps, drawn semi-transparent above a height\n"
-              << "                     threshold; the DTM is left without orthophoto under it\n"
-              << "  -dsm, -mns <f.tif> surface model, used like -dhm (height = DSM - DTM)\n"
-              << "  -cop <cloud.laz>   add a point cloud explicitly\n"
-              << "  --snapshot <f.ppm> save a frame once loading has settled, then quit\n"
-              << "  --dem-lod angle,level  DEM collapse angle (degrees, default 1) and maximum\n"
-              << "                     quadtree level (default 5) at load\n"
-              << "  --view x,y,z,d,yaw,pitch\n"
-              << "                     start looking at world point x,y,z (scene CRS) from d\n"
-              << "                     meters away; yaw and pitch in degrees\n"
-              << "  -h, --help         this help\n\n"
-              << "Examples:\n"
-              << "  " << prog << " cloud.copc.laz ortho.tif\n"
-              << "  " << prog << " tile1.copc.laz tile2.copc.laz -o ortho.tif\n"
-              << "  " << prog << " dem.tif cloud.laz -o ortho.tif\n"
-              << "  " << prog << " -mnt mnt.tif -mnh mnh.tif -o ortho.tif\n\n"
-              << "Press H in the viewer for the controls.\n";
+        << "Files (any number, shown together in one scene):\n"
+        << "  *.las, *.laz       point cloud, loaded in full (thinned to 2M points)\n"
+        << "  *.copc.laz         point cloud, streamed tile by tile\n"
+        << "  *.tif, *.tiff      DEM/DSM elevation raster (Float/Int), or the orthophoto\n"
+        << "                     if it is 8-bit RGB(A) imagery\n\n"
+        << "Options:\n"
+        << "  -o <ortho.tif>     orthophoto used to color points and texture DEMs\n"
+        << "  -d <dem.tif>       add a DEM explicitly (needed for 8-bit Terrain-RGB DEMs)\n"
+        << "  -dtm, -mnt <f.tif> same as -d: a terrain model, ground of -dhm / -dsm\n"
+        << "  -dhm, -mnh <f.tif> height model (height above ground): what stands on the\n"
+        << "                     DTM it overlaps, drawn semi-transparent above a height\n"
+        << "                     threshold; the DTM is left without orthophoto under it\n"
+        << "  -dsm, -mns <f.tif> surface model, used like -dhm (height = DSM - DTM)\n"
+        << "  -cop <cloud.laz>   add a point cloud explicitly\n"
+        << "  --snapshot <f.ppm> save a frame once loading has settled, then quit\n"
+        << "  --dem-lod angle,level  DEM collapse angle (degrees, default 1) and maximum\n"
+        << "                     quadtree level (default 5) at load\n"
+        << "  --view x,y,z,d,yaw,pitch\n"
+        << "                     start looking at world point x,y,z (scene CRS) from d\n"
+        << "                     meters away; yaw and pitch in degrees\n"
+        << "  -h, --help         this help\n\n"
+        << "Examples:\n"
+        << "  " << prog << " cloud.copc.laz ortho.tif\n"
+        << "  " << prog << " tile1.copc.laz tile2.copc.laz -o ortho.tif\n"
+        << "  " << prog << " dem.tif cloud.laz -o ortho.tif\n"
+        << "  " << prog << " -mnt mnt.tif -mnh mnh.tif -o ortho.tif\n\n"
+        << "Press H in the viewer for the controls.\n";
 }
 
 CliStatus parseCommandLine(int argc, const char* const* argv, CommandLine& cmd,
@@ -127,8 +128,10 @@ CliStatus parseCommandLine(int argc, const char* const* argv, CommandLine& cmd,
             std::string ext = lowerExt(arg);
             if (ext == "tif" || ext == "tiff") {
                 RasterInfo info;
-                if (readRasterInfo(arg, info) && info.byteImage) images.push_back(arg);
-                else plan.dems.push_back(arg);
+                if (readRasterInfo(arg, info) && info.byteImage)
+                    images.push_back(arg);
+                else
+                    plan.dems.push_back(arg);
             } else {
                 plan.clouds.push_back(arg);
             }

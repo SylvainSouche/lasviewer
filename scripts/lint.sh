@@ -18,9 +18,9 @@ fix=no
 cf=${CLANG_FORMAT:-clang-format}
 ct=${CLANG_TIDY:-clang-tidy}
 
-files=$(git ls-files 'Geo/*.cpp' 'Geo/*.h' 'Viewer/*.cpp' 'Viewer/*.h')
-headers=$(git ls-files 'Geo/*.h' 'Viewer/*.h')
-sources=$(git ls-files 'Geo/*.cpp' 'Viewer/*.cpp')
+files=$(git ls-files -co --exclude-standard 'Geo/*.cpp' 'Geo/*.h' 'Viewer/*.cpp' 'Viewer/*.h')
+headers=$(git ls-files -co --exclude-standard 'Geo/*.h' 'Viewer/*.h')
+sources=$(git ls-files -co --exclude-standard 'Geo/*.cpp' 'Viewer/*.cpp')
 
 # --- formatting
 status=0

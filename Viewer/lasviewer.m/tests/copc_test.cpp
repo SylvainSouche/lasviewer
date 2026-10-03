@@ -3,6 +3,7 @@
 // each resolution (octree depth), tile borders, and the level of detail.
 #include "copc_streamer.h"
 
+#include <atf-c++.hpp>
 #include <copc-lib/hierarchy/key.hpp>
 #include <copc-lib/io/copc_writer.hpp>
 #include <copc-lib/las/header.hpp>
@@ -12,8 +13,6 @@
 #include <set>
 #include <tuple>
 #include <vector>
-
-#include <atf-c++.hpp>
 
 #define CHECK(cond) ATF_REQUIRE(cond)
 
@@ -87,7 +86,8 @@ std::multiset<std::tuple<long, long, long>> loadAll(TileGrid& g, double resoluti
         TileGrid::LoadResult r = g.loadTile(requestFor(g, static_cast<int>(i), resolution));
         CHECK(r.ok && r.positions.size() == r.colors.size() && r.orthoColors.empty());
         for (size_t k = 0; k < r.positions.size(); k += 3) {
-            glm::dvec3 w = g.frame.toWorld(glm::vec3(r.positions[k], r.positions[k + 1], r.positions[k + 2]));
+            glm::dvec3 w =
+                g.frame.toWorld(glm::vec3(r.positions[k], r.positions[k + 1], r.positions[k + 2]));
             pts.insert({std::lround(w.x * 100), std::lround(w.y * 100), std::lround(w.z * 100)});
         }
     }
@@ -114,9 +114,13 @@ ATF_TEST_CASE_BODY(test_tile_layout) {
 ATF_TEST_CASE_WITHOUT_HEAD(test_load_by_resolution_each_point_once);
 ATF_TEST_CASE_BODY(test_load_by_resolution_each_point_once) {
     std::unique_ptr<TileGrid> g(makeGrid(writeCopc("res.copc.laz")));
-    struct Case { double resolution; size_t expected; };
-    for (Case c : {Case{10.0, kDepth0}, Case{20.0, kDepth0}, Case{5.0, kDepth0 + kDepth1},
-                   Case{2.5, kDepth0 + kDepth1 + kDepth2}, Case{0.0, kDepth0 + kDepth1 + kDepth2}}) {
+    struct Case {
+        double resolution;
+        size_t expected;
+    };
+    for (Case c :
+         {Case{10.0, kDepth0}, Case{20.0, kDepth0}, Case{5.0, kDepth0 + kDepth1},
+          Case{2.5, kDepth0 + kDepth1 + kDepth2}, Case{0.0, kDepth0 + kDepth1 + kDepth2}}) {
         auto pts = loadAll(*g, c.resolution);
         CHECK(pts.size() == c.expected);
         std::set<std::tuple<long, long, long>> unique(pts.begin(), pts.end());
@@ -127,7 +131,8 @@ ATF_TEST_CASE_BODY(test_load_by_resolution_each_point_once) {
     auto inTile = [&](int index, double x, double y) {
         TileGrid::LoadResult r = g->loadTile(requestFor(*g, index, 10.0));
         for (size_t k = 0; k < r.positions.size(); k += 3) {
-            glm::dvec3 w = g->frame.toWorld(glm::vec3(r.positions[k], r.positions[k + 1], r.positions[k + 2]));
+            glm::dvec3 w =
+                g->frame.toWorld(glm::vec3(r.positions[k], r.positions[k + 1], r.positions[k + 2]));
             if (std::abs(w.x - x) < 1e-6 && std::abs(w.y - y) < 1e-6) return true;
         }
         return false;
@@ -159,7 +164,7 @@ ATF_TEST_CASE_BODY(test_tile_obb_and_spacing) {
 
     Tile sloped{};
     sloped.pointCount = 10000;
-    computeTileObb(sloped, grid(0.3)); // the same points on a 0.3 slope
+    computeTileObb(sloped, grid(0.3));                // the same points on a 0.3 slope
     float alongSlope = std::sqrt(1.0f + 0.3f * 0.3f); // true spacing along the surface in x
     // The box follows the slope: the smallest extent is across it (~0), and
     // its axis is the slope's normal.
@@ -189,9 +194,9 @@ ATF_TEST_CASE_BODY(test_desired_resolution) {
     };
     double near = at(0.05f), mid = at(0.5f), far = at(500.0f);
     CHECK(near > 0.0 && mid > 0.0);
-    CHECK(near < mid);    // nearer: finer
-    CHECK(near >= 0.1);   // clamped
-    CHECK(far == 0.0);    // a few pixels: leave it
+    CHECK(near < mid);  // nearer: finer
+    CHECK(near >= 0.1); // clamped
+    CHECK(far == 0.0);  // a few pixels: leave it
 }
 
 ATF_INIT_TEST_CASES(tcs) {

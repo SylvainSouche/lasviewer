@@ -3,14 +3,13 @@
 #include "cli.h"
 #include "raster.h"
 
+#include <atf-c++.hpp>
 #include <gdal_priv.h>
 
 #include <initializer_list>
 #include <sstream>
 #include <string>
 #include <vector>
-
-#include <atf-c++.hpp>
 
 #define CHECK(cond) ATF_REQUIRE(cond)
 
@@ -48,14 +47,17 @@ Result parse(std::initializer_list<const char*> args) {
     return r;
 }
 
-bool mentions(const std::string& s, const char* what) { return s.find(what) != std::string::npos; }
+bool mentions(const std::string& s, const char* what) {
+    return s.find(what) != std::string::npos;
+}
 
 } // namespace
 
 ATF_TEST_CASE_WITHOUT_HEAD(test_help_and_errors);
 ATF_TEST_CASE_BODY(test_help_and_errors) {
     Result r = parse({"-h"});
-    CHECK(r.status == CliStatus::Help && mentions(r.out, "Usage:") && mentions(r.out, kLasviewerVersion));
+    CHECK(r.status == CliStatus::Help && mentions(r.out, "Usage:") &&
+          mentions(r.out, kLasviewerVersion));
     CHECK(parse({"--help"}).status == CliStatus::Help);
 
     r = parse({});
@@ -103,7 +105,8 @@ ATF_TEST_CASE_BODY(test_tiff_classified_by_content) {
 
 ATF_TEST_CASE_WITHOUT_HEAD(test_height_models);
 ATF_TEST_CASE_BODY(test_height_models) {
-    Result r = parse({"-mnt", "t.tif", "-mnh", "h.tif", "-dsm", "s.tif", "-dtm", "t2.tif", "-d", "t3.tif"});
+    Result r = parse(
+        {"-mnt", "t.tif", "-mnh", "h.tif", "-dsm", "s.tif", "-dtm", "t2.tif", "-d", "t3.tif"});
     CHECK(r.status == CliStatus::Run);
     CHECK(r.cmd.plan.dems == (std::vector<std::string>{"t.tif", "t2.tif", "t3.tif"}));
     CHECK(r.cmd.plan.aboveGround.size() == 2);
@@ -120,7 +123,8 @@ ATF_TEST_CASE_BODY(test_dem_lod_and_view) {
     Result r = parse({"--dem-lod", "2.5,7", "--view", "991000,6557000,800,150,-20,35.5", "a.laz"});
     CHECK(r.status == CliStatus::Run);
     CHECK(r.cmd.plan.demAngle == 2.5 && r.cmd.plan.demMaxLevel == 7);
-    CHECK(r.cmd.viewSet && r.cmd.view[0] == 991000 && r.cmd.view[3] == 150 && r.cmd.view[5] == 35.5);
+    CHECK(r.cmd.viewSet && r.cmd.view[0] == 991000 && r.cmd.view[3] == 150 &&
+          r.cmd.view[5] == 35.5);
     for (const char* bad : {"0,5", "-1,5", "1,11", "1,-1", "1,2.5", "1,5x", "1", "a,b", "1,5,6"}) {
         r = parse({"--dem-lod", bad, "a.laz"});
         CHECK(r.status == CliStatus::Error && mentions(r.err, "--dem-lod needs"));
