@@ -200,6 +200,12 @@ void TileGrid::requestLoad(int tileIndex, double resolution) {
 
 void TileGrid::init(const std::string& path, const WorldBounds& bounds, const Orthophoto* ortho,
                     const SceneFrame& sceneFrame) {
+    layoutTiles(path, bounds, ortho, sceneFrame);
+    start();
+}
+
+void TileGrid::layoutTiles(const std::string& path, const WorldBounds& bounds,
+                           const Orthophoto* ortho, const SceneFrame& sceneFrame) {
     orthoPtr = ortho;
     copcPath = path;
     frame = sceneFrame;
@@ -230,7 +236,9 @@ void TileGrid::init(const std::string& path, const WorldBounds& bounds, const Or
             t.glRadius = glm::length(t.glMax - t.glMin) * 0.5f;
         }
     }
+}
 
+void TileGrid::start() {
     worker = std::thread(&TileGrid::loaderRun, this);
 
     // Coarse first pass: every tile at ~500 points, for a fast first frame.
@@ -271,7 +279,7 @@ void TileGrid::releaseTileGL(Tile& t) {
 // uploadTile: PCA for LOD + GPU upload. Main thread.
 // ===========================================================================
 
-static void computeTilePCA(Tile& t, const std::vector<float>& pos) {
+void computeTileObb(Tile& t, const std::vector<float>& pos) {
     // PCA: compute the inertia axes (principal components) of the tile.
     glm::vec3 centroid(0.0f);
     for (size_t i = 0; i < static_cast<size_t>(t.pointCount); ++i) {
@@ -290,9 +298,13 @@ static void computeTilePCA(Tile& t, const std::vector<float>& pos) {
         cov[1][2] += p.y * p.z;
         cov[2][2] += p.z * p.z;
     }
+    // Only the upper triangle was accumulated: scale it, then mirror it.
+    // (This used to scale the empty lower triangle and copy it over the
+    // upper one, zeroing every covariance: the "oriented" box was always
+    // aligned with the GL axes.)
     float invN = 1.0f / static_cast<float>(t.pointCount);
     for (int i = 0; i < 3; ++i)
-        for (int j = 0; j <= i; ++j) {
+        for (int j = i; j < 3; ++j) {
             cov[i][j] *= invN;
             cov[j][i] = cov[i][j];
         }
@@ -359,9 +371,13 @@ static void computeTilePCA(Tile& t, const std::vector<float>& pos) {
     t.obbExtent2 = std::sqrt(std::max(0.0f, cov[order[1]][order[1]]));
     t.obbExtent3 = std::sqrt(std::max(0.0f, cov[order[2]][order[2]]));
 
-    float obbVolume = (2.0f * t.obbExtent1) * (2.0f * t.obbExtent2) * (2.0f * t.obbExtent3);
-    if (obbVolume < 1e-15f) obbVolume = 1e-15f;
-    t.pointSpacing = std::cbrt(obbVolume / static_cast<float>(t.pointCount));
+    // Point spacing of a surface (LiDAR is 2.5D): points per area of the two
+    // largest principal extents. For points spread uniformly over a side s,
+    // σ = s/√12, so the area is 12·σ1·σ2. (It used to be the cube root of a
+    // 3D volume, which tied density to the terrain's vertical spread: a flat
+    // tile looked far denser than it is, and was over-thinned by the shader.)
+    float area = std::max(12.0f * t.obbExtent1 * t.obbExtent2, 1e-12f);
+    t.pointSpacing = std::sqrt(area / static_cast<float>(t.pointCount));
 }
 
 void TileGrid::uploadTile(Tile& t, LoadResult& r) {
@@ -381,7 +397,7 @@ void TileGrid::uploadTile(Tile& t, LoadResult& r) {
     t.glCenter = (t.glMin + t.glMax) * 0.5f;
     t.glRadius = glm::length(t.glMax - t.glMin) * 0.5f;
 
-    computeTilePCA(t, r.positions);
+    computeTileObb(t, r.positions);
 
     glGenVertexArrays(1, &t.vao);
     glBindVertexArray(t.vao);

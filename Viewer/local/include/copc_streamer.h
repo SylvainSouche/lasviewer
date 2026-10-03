@@ -46,6 +46,12 @@ struct Tile {
     bool hasGeometry() const { return vao != 0 && pointCount > 0; }
 };
 
+// Fills t's oriented bounding box from its first t.pointCount GL-space
+// positions: principal axes (largest spread first), extents (standard
+// deviations along them) and the surface point spacing sqrt(12·σ1·σ2 / n),
+// which drives the shader's screen-space thinning and desiredResolution().
+void computeTileObb(Tile& t, const std::vector<float>& pos);
+
 struct TileGrid {
     std::vector<Tile> tiles;
     int gridX = 8, gridY = 8;
@@ -80,9 +86,15 @@ struct TileGrid {
     const Orthophoto* orthoPtr = nullptr;
 
     // bounds: the file's header extent. ortho may be null (elevation colors
-    // only); it must outlive the grid.
+    // only); it must outlive the grid. init = layoutTiles + start.
     void init(const std::string& copcPath, const WorldBounds& bounds, const Orthophoto* ortho,
               const SceneFrame& frame);
+    // The tile grid alone (no thread, no load): gridX × gridY tiles over the
+    // header extent. Tests call loadTile() directly after this.
+    void layoutTiles(const std::string& copcPath, const WorldBounds& bounds,
+                     const Orthophoto* ortho, const SceneFrame& frame);
+    // Starts the loader thread and queues a coarse load of every tile.
+    void start();
     TileGrid(); // out of line: CopcSource is only complete in the .cpp
     ~TileGrid();
     void requestLoad(int tileIndex, double resolution);
