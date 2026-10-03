@@ -1,11 +1,12 @@
 // scene.cpp — scene loading: read every input's header extent first, fix the
 // shared frame from their union, then create one layer per input.
 #include "scene.h"
+
 #include "copc_layer.h"
 #include "dem_layer.h"
-#include "raster.h"
 #include "point_cloud.h"
 #include "point_cloud_layer.h"
+#include "raster.h"
 
 #include <algorithm>
 #include <cmath>
@@ -18,12 +19,13 @@ constexpr int kMaxOrthoPixels = 64'000'000;
 // Minimum fraction of a cloud's XY extent the ortho must cover to color it.
 constexpr double kMinOrthoCoverage = 0.25;
 
-bool isCopcPath(const std::string& p) { return p.find(".copc.") != std::string::npos; }
+bool isCopcPath(const std::string& p) {
+    return p.find(".copc.") != std::string::npos;
+}
 
 // The LAS/LAZ/COPC readers report unreadable files by throwing; turn that into
 // a logged failure.
-template <typename F>
-bool guarded(const std::string& path, F&& f) {
+template <typename F> bool guarded(const std::string& path, F&& f) {
     try {
         return f();
     } catch (const std::exception& e) {
@@ -67,13 +69,16 @@ GLBounds Scene::bounds(bool visibleOnly) const {
 bool Scene::load(const LoadPlan& plan, const Programs& programs,
                  const std::function<void(const std::string&)>& progress) {
     // --- 1. Headers. ---
-    struct CloudInput { std::string path; CloudHeader header; };
+    struct CloudInput {
+        std::string path;
+        CloudHeader header;
+    };
     struct DemInput {
         std::string path;
         RasterInfo info;
         WorldBounds bounds;
         AboveGroundKind kind = AboveGroundKind::Height; // above-ground inputs
-        int ground = -1; // above-ground inputs: index in `dems`
+        int ground = -1;                                // above-ground inputs: index in `dems`
     };
     std::vector<CloudInput> clouds;
     std::vector<DemInput> dems, above;
@@ -87,8 +92,8 @@ bool Scene::load(const LoadPlan& plan, const Programs& programs,
         }
         const WorldBounds& b = in.header.bounds;
         std::cerr << "[scene] " << p << ": " << in.header.pointCount << " pts, X[" << b.min.x
-                  << ", " << b.max.x << "] Y[" << b.min.y << ", " << b.max.y << "] Z["
-                  << b.min.z << ", " << b.max.z << "]"
+                  << ", " << b.max.x << "] Y[" << b.min.y << ", " << b.max.y << "] Z[" << b.min.z
+                  << ", " << b.max.z << "]"
                   << (in.header.epsg ? ", EPSG:" + std::to_string(in.header.epsg) : "")
                   << std::endl;
         clouds.push_back(std::move(in));
@@ -107,7 +112,8 @@ bool Scene::load(const LoadPlan& plan, const Programs& programs,
     for (const LoadPlan::AboveGround& a : plan.aboveGround) {
         DemInput in{a.path, {}, {}, a.kind};
         if (!readRasterInfo(a.path, in.info) || !in.info.hasGeo) {
-            std::cerr << "ERROR: raster is unreadable or not georeferenced: " << a.path << std::endl;
+            std::cerr << "ERROR: raster is unreadable or not georeferenced: " << a.path
+                      << std::endl;
             continue;
         }
         double x0, y0, x1, y1;
@@ -217,21 +223,24 @@ bool Scene::load(const LoadPlan& plan, const Programs& programs,
         progress("Loading " + c.path);
         const Orthophoto* o = orthoForCloud(c);
         if (isCopcPath(c.path)) {
-            auto layer = std::make_unique<CopcLayer>(c.path, c.header.bounds, c.header.pointCount, o);
+            auto layer =
+                std::make_unique<CopcLayer>(c.path, c.header.bounds, c.header.pointCount, o);
             layer->epsg = c.header.epsg;
             layer->start(frame);
             layers.push_back(std::move(layer));
         } else {
             auto layer = std::make_unique<PointCloudLayer>(c.path, o);
             layer->epsg = c.header.epsg;
-            if (guarded(c.path, [&] { return layer->load(frame); })) layers.push_back(std::move(layer));
-            else std::cerr << "ERROR: could not load point cloud: " << c.path << std::endl;
+            if (guarded(c.path, [&] { return layer->load(frame); }))
+                layers.push_back(std::move(layer));
+            else
+                std::cerr << "ERROR: could not load point cloud: " << c.path << std::endl;
         }
     }
     if (!programs.tess) {
         for (const DemInput& d : dems)
-            std::cerr << "ERROR: DEM display needs OpenGL 4.0+ tessellation — skipping "
-                      << d.path << std::endl;
+            std::cerr << "ERROR: DEM display needs OpenGL 4.0+ tessellation — skipping " << d.path
+                      << std::endl;
         return !layers.empty();
     }
 
@@ -242,7 +251,10 @@ bool Scene::load(const LoadPlan& plan, const Programs& programs,
     std::vector<DemLayer*> grounds(dems.size(), nullptr);
     for (size_t i = 0; i < dems.size(); ++i) {
         const DemInput& d = dems[i];
-        struct Cover { std::string path; AboveGroundKind kind; };
+        struct Cover {
+            std::string path;
+            AboveGroundKind kind;
+        };
         std::vector<Cover> covers;
         for (const DemInput& a : above)
             if (a.ground == static_cast<int>(i)) covers.push_back({a.path, a.kind});
@@ -293,8 +305,8 @@ bool Scene::load(const LoadPlan& plan, const Programs& programs,
             return true;
         };
         progress("Loading " + a.path);
-        auto layer = std::make_unique<DemLayer>(a.path, ortho.get(), source,
-                                                DemRole::AboveGround, kindName(a.kind));
+        auto layer = std::make_unique<DemLayer>(a.path, ortho.get(), source, DemRole::AboveGround,
+                                                kindName(a.kind));
         layer->epsg = a.info.epsg;
         if (plan.demAngle > 0.0 || plan.demMaxLevel >= 0)
             layer->setLod(plan.demAngle > 0.0 ? plan.demAngle : 1.0,

@@ -5,10 +5,9 @@
 #include <cmath>
 
 glm::vec3 Camera::position() const {
-    return target + glm::vec3(
-        distance * std::cos(pitch) * std::sin(yaw),
-        distance * std::sin(pitch),
-        distance * std::cos(pitch) * std::cos(yaw));
+    return target + glm::vec3(distance * std::cos(pitch) * std::sin(yaw),
+                              distance * std::sin(pitch),
+                              distance * std::cos(pitch) * std::cos(yaw));
 }
 
 glm::mat4 Camera::view() const {
@@ -41,9 +40,8 @@ glm::vec3 Camera::unproject(float ndcX, float ndcY, float ndcZ) const {
     return glm::vec3(world);
 }
 
-void computeNearFar(const Camera& cam, const glm::vec3& bboxMin,
-                    const glm::vec3& bboxMax, float zScale,
-                    float& nearP, float& farP) {
+void computeNearFar(const Camera& cam, const glm::vec3& bboxMin, const glm::vec3& bboxMax,
+                    float zScale, float& nearP, float& farP) {
     glm::mat4 V = cam.view();
     glm::vec4 corners[8] = {
         {bboxMin.x, bboxMin.y * zScale, bboxMin.z, 1},

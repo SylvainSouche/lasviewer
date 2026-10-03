@@ -12,3 +12,5 @@ test-report/
 # bmake-it fetch: downloaded archives and extracted work trees
 distfiles/
 work/
+# scripts/ci.sh work area (bmake-it clone, lint tools)
+/.ci/

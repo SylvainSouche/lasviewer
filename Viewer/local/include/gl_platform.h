@@ -9,16 +9,13 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #ifdef __APPLE__
-#  define GL_SILENCE_DEPRECATION 1
-#  include <OpenGL/gl3.h>
+#define GL_SILENCE_DEPRECATION 1
+#include <OpenGL/gl3.h>
+#else
+// Linux (Mesa / libglvnd): the core 3.x/4.x entry points are declared by
+// glext.h with GL_GLEXT_PROTOTYPES and exported by libGL, so no loader is
+// needed. Builds and links in CI; not yet run on a Linux GPU.
+#define GL_GLEXT_PROTOTYPES 1
+#include <GL/gl.h>
+#include <GL/glext.h>
 #endif
-// Linux/Windows: not verified here (no GPU/GLFW in this sandbox — see
-// specs.md §12.3). GLFW_INCLUDE_NONE + linking -lGL (Linux, see Makefile)
-// gets the header DECLARATIONS this project needs from most distributions'
-// dev packages, but whether the GL 4.0+ tessellation entry points resolve
-// as directly-linkable symbols (vs. needing glXGetProcAddress / a loader
-// like GLAD/GLEW, which this project does not currently use) has NOT been
-// confirmed on real Linux hardware. If Linux linking fails on
-// glCreateShader(GL_TESS_CONTROL_SHADER)-family calls specifically (link
-// error, not a missing-declaration compile error), that's the likely
-// cause — a loader would need to be added.

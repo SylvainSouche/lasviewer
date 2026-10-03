@@ -29,6 +29,5 @@ struct BBoxCorners {
 
 // Compute dynamic near/far from bbox corners in view space.
 // Returns {near, far}. Sets cameraInside if camera is inside the bbox.
-void computeNearFar(const Camera& cam, const glm::vec3& bboxMin,
-                    const glm::vec3& bboxMax, float zScale,
-                    float& nearP, float& farP);
+void computeNearFar(const Camera& cam, const glm::vec3& bboxMin, const glm::vec3& bboxMax,
+                    float zScale, float& nearP, float& farP);

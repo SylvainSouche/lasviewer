@@ -29,8 +29,8 @@ float cellDeviation(const DemGrid& g, const QuadCell& cell) {
     double dev = 0.0;
     for (int r = r0; r <= r1; ++r) {
         const double t = (r - cell.row) / cell.ch;
-        const double left = e00 + (e01 - e00) * t;   // col side
-        const double right = e10 + (e11 - e10) * t;  // col + cw side
+        const double left = e00 + (e01 - e00) * t;  // col side
+        const double right = e10 + (e11 - e10) * t; // col + cw side
         const float* line = g.elev + static_cast<size_t>(r) * g.w;
         for (int c = c0; c <= c1; ++c) {
             if (g.isNodata(c, r)) continue;
@@ -83,7 +83,9 @@ QuadCell makeCell(int level, int ix, int iy, double cw0, double ch0) {
 }
 
 // Finest-level span of a level-L cell.
-int span(int level, int maxLevel) { return 1 << (maxLevel - level); }
+int span(int level, int maxLevel) {
+    return 1 << (maxLevel - level);
+}
 
 // Deepest leaf level along one edge of `c` (side 0..3 as in edgeCodes), -1
 // if no leaf borders it.
@@ -94,10 +96,22 @@ int maxLevelAlongEdge(const QuadCell& c, int side, const LeafIndex& index, int m
     for (int k = 0; k < s; ++k) {
         int fx, fy;
         switch (side) {
-        case 0: fx = x0 + k; fy = y0 - 1; break;      // row−
-        case 1: fx = x0 + s; fy = y0 + k; break;      // col+
-        case 2: fx = x0 + k; fy = y0 + s; break;      // row+
-        default: fx = x0 - 1; fy = y0 + k; break;     // col−
+        case 0:
+            fx = x0 + k;
+            fy = y0 - 1;
+            break; // row−
+        case 1:
+            fx = x0 + s;
+            fy = y0 + k;
+            break; // col+
+        case 2:
+            fx = x0 + k;
+            fy = y0 + s;
+            break; // row+
+        default:
+            fx = x0 - 1;
+            fy = y0 + k;
+            break; // col−
         }
         best = std::max(best, index.levelAt(fx, fy));
     }
@@ -106,8 +120,7 @@ int maxLevelAlongEdge(const QuadCell& c, int side, const LeafIndex& index, int m
 
 } // namespace
 
-int balanceLeaves(std::vector<QuadCell>& leaves, int coarse, int maxLevel, double cw0,
-                  double ch0) {
+int balanceLeaves(std::vector<QuadCell>& leaves, int coarse, int maxLevel, double cw0, double ch0) {
     int passes = 0;
     for (bool changed = true; changed && passes < 2 * maxLevel + 2; ++passes) {
         changed = false;
@@ -124,7 +137,8 @@ int balanceLeaves(std::vector<QuadCell>& leaves, int coarse, int maxLevel, doubl
             }
             changed = true;
             for (int k = 0; k < 4; ++k)
-                next.push_back(makeCell(c.level + 1, 2 * c.ix + (k & 1), 2 * c.iy + (k >> 1), cw0, ch0));
+                next.push_back(
+                    makeCell(c.level + 1, 2 * c.ix + (k & 1), 2 * c.iy + (k >> 1), cw0, ch0));
         }
         leaves = std::move(next);
     }
@@ -168,15 +182,18 @@ std::vector<QuadCell> buildLeaves(const DemGrid& g, int coarse, int maxLevel, do
                 // Mixed nodata at the finest level: keep the cell if its centre
                 // has data.
                 if (nd > 0) {
-                    int c = std::clamp(static_cast<int>(std::lround(cell.col + cell.cw * 0.5)), 0, g.w - 1);
-                    int r = std::clamp(static_cast<int>(std::lround(cell.row + cell.ch * 0.5)), 0, g.h - 1);
+                    int c = std::clamp(static_cast<int>(std::lround(cell.col + cell.cw * 0.5)), 0,
+                                       g.w - 1);
+                    int r = std::clamp(static_cast<int>(std::lround(cell.row + cell.ch * 0.5)), 0,
+                                       g.h - 1);
                     if (g.isNodata(c, r)) return;
                 }
                 out.push_back(cell);
                 return;
             }
             for (int k = 0; k < 4; ++k)
-                build(makeCell(cell.level + 1, 2 * cell.ix + (k & 1), 2 * cell.iy + (k >> 1), cw0, ch0),
+                build(makeCell(cell.level + 1, 2 * cell.ix + (k & 1), 2 * cell.iy + (k >> 1), cw0,
+                               ch0),
                       out);
         };
 

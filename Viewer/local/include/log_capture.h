@@ -7,15 +7,15 @@
 // While alive, every line written to std::cerr (from any thread) is kept in
 // a bounded buffer and still forwarded to the real stderr.
 class LogCapture : public std::streambuf {
-public:
+  public:
     LogCapture();
     ~LogCapture() override;
 
-protected:
+  protected:
     int overflow(int c) override;
     std::streamsize xsputn(const char* s, std::streamsize n) override;
 
-private:
+  private:
     void putChar(char c);
     std::streambuf* original_;
     std::string line_;

@@ -3,15 +3,16 @@
 // (copc-lib). Both libraries hand back standard, uncompressed LAS records.
 #pragma once
 #include <glm/glm.hpp>
+
 #include <cstdint>
 #include <cstring>
 #include <string>
 
 // Where the fields of one LAS point record are (LAS 1.0-1.4, formats 0-10).
 struct LasRecordLayout {
-    int format = 0;          // point data format id (compression bits masked)
-    int recordLength = 0;    // bytes per record, extra bytes included
-    int rgbOffset = -1;      // byte offset of Red, Green, Blue (uint16 each); -1 if none
+    int format = 0;       // point data format id (compression bits masked)
+    int recordLength = 0; // bytes per record, extra bytes included
+    int rgbOffset = -1;   // byte offset of Red, Green, Blue (uint16 each); -1 if none
     glm::dvec3 scale{1.0}, offset{0.0};
 
     bool hasRGB() const { return rgbOffset >= 0; }

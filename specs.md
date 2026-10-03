@@ -131,7 +131,7 @@ Orthophoto colorization must account for the Z negation: `worldY = -gz × scale 
 ## 4. Point Cloud Subsampling
 
 ### 4.1
-Clouds larger than **2M points** are subsampled at load time using a **spatial grid**: one point per cell, where `cellSize = sqrt(area / 2M)`. This guarantees uniform spatial coverage regardless of input point order (LiDAR points are stored in scan order, so naive "every Nth point" drops entire scan lines).
+Clouds larger than **2M points** are subsampled at load time using a **spatial grid**: one point per cell, where `cellSize = sqrt(area / 2M)` over the header's XY bounds. This guarantees uniform spatial coverage regardless of input point order (LiDAR points are stored in scan order, so naive "every Nth point" drops entire scan lines). The file is read **once**: each point is kept if it is the first of its cell in file order, else dropped, so memory holds the grid (1 byte a cell) and the kept points only (246 MB for a 55.5M-point IGN tile, down from 2966 MB when every point was decoded first). The result is deterministic and keeps every occupied cell (about 2M points, not exactly 2M). If the header bounds are unusable, one extra pass computes them.
 
 ### 4.2
 Grid dimensions capped at 2048×2048 to avoid excessive memory. `cellSize` recomputed to match the capped grid.
@@ -171,7 +171,7 @@ Decompressed nodes are cached, least recently used first out beyond **512 MB**. 
 
 ### 5.4
 **Distance-based, apparent-size-driven LOD** (not culling): per-tile resolution is computed from the tile's *projected on-screen area*, not just camera distance:
-1. On upload, each tile's points are PCA'd (Jacobi eigendecomposition of the position covariance) to get an oriented bounding box (OBB): 3 principal axes + extents, and a point-spacing estimate (`cbrt(obbVolume / pointCount)`).
+1. On upload, each tile's points are PCA'd (Jacobi eigendecomposition of the position covariance) to get an oriented bounding box (OBB): 3 principal axes + extents (standard deviations along them), and the surface point spacing `sqrt(12·σ1·σ2 / pointCount)` (points per area of the two largest extents; 12σ1σ2 is the area of a uniform spread). The shader's screen-space thinning uses it as an areal density. (Until 2026-10 the covariance's off-diagonal terms were zeroed by a normalisation bug, so the box was axis-aligned, and the spacing was the cube root of a 3D volume per point, which over-thinned flat tiles and under-thinned tall ones.)
 2. Each frame, `desiredResolution(tile, camPos, fov, viewportH)` projects all 3 OBB faces toward the camera (`Σ face.dim1 × face.dim2 × |dot(face.normal, sightDir)|`) to estimate the tile's projected area in pixels.
 3. If projected area < 25px², the tile is skipped (`resolution = 0`).
 4. Otherwise, target point count = `projectedAreaPx / 25`, clamped to [100, 500000]; resolution = `sqrt(tileAreaMeters / targetPoints)`, clamped to [0.1m, 50m] (>50m → skip).
@@ -400,26 +400,34 @@ Output: `build/<os>-<arch>/bin/lasviewer` at the workspace root (e.g. `build/mac
 
 ### 12.2
 **External libraries are ordinary library modules.** Each one imports the installed library instead of compiling it (`IMPORT=`), staging only the headers listed in `IMPORT_HEADERS=` into the framework's public include path, so consumers use `PREREQS=` and `LIBS=` exactly as for the project's own libraries. External frameworks set `PUBLIC_HEADERS_SYSTEM=yes` (their headers reach consumers via `-isystem`).
-- laz-perf 3.4.0 and copc-lib 2.6.3: `IMPORT=fetch:` + `FETCH_BUILD=cmake` (release archives, checked against each module's `distinfo`; tests, Python bindings and shared copc-lib off). copc-lib's release archive lacks its bundled laz-perf (a git submodule), so its CMake is pointed at `liblazperf.m`'s install prefix with `CMAKE_PREFIX_PATH`. laz-perf's CMake installs only its shared library, which carries an `@rpath` install name.
+- laz-perf 3.4.0 and copc-lib 2.6.3: `IMPORT=fetch:` + `FETCH_BUILD=cmake` (release archives, checked against each module's `distinfo`; tests, Python bindings and shared copc-lib off). copc-lib's release archive lacks its bundled laz-perf (a git submodule); bmake-it passes `liblazperf.m`'s install prefix to its CMake (`CMAKE_PREFIX_PATH`). laz-perf's CMake installs only its shared library, which carries an `@rpath` install name.
 - GLFW: `IMPORT_HEADERS=GLFW` via pkg-config `glfw3`.
 - Dear ImGui: `IMPORT=fetch:imgui`. The release archive (`FETCH_URL=`, GitHub tag `v1.91.9b`) is downloaded once into `distfiles/`, checked against the committed `distinfo` (SHA-256 and size), extracted into `work/`, and its `SRCS=` (core + the GLFW/OpenGL3 backends) compiled by bmake-it; `IMPORT_HEADERS=` are staged like an imported library's. Only the makefile, `distinfo` and `mk/` hook are committed.
 - GDAL installs its headers loose, so its module stages them by pattern: `IMPORT_HEADERS=gdal*.h cpl_*.h ogr*.h`.
-- glm is header-only: `IMPORT_LIB=none` (bmake-it finds `glm/` under a tool prefix and stages no library).
-- glm is header-only with no pkg-config file: its include directory comes from per-target hooks (`GIS/libglm.m/mk/pre.<os>.mk`), and no library is staged.
+- glm is header-only: `IMPORT_LIB=none` (bmake-it finds `glm/` under a tool prefix and stages no library), checked by `REQUIRES=header:glm/glm.hpp`.
 
 ### 12.2b
 Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/lasviewer.m/mk/local.macos.mk` (OpenGL, Cocoa and IOKit frameworks) and `local.linux.mk` (`-lGL`).
 
 ### 12.2c
-**bmake-it restrictions and how lasviewer works around them.** Checked against bmake-it `main` at c4d7295 (2026-10-02). For each one: what goes wrong, why, the workaround and what it costs, and how to check that a fix makes it removable. Removing a workaround is the acceptance test: delete it, then build from a clean tree (`bmake clean`, or delete every `build/` and `work/`), since an incremental build can hide a regression (see "ImGui's include path" in the resolved list).
+**bmake-it restrictions and how lasviewer works around them.** Checked against bmake-it `main` at 8ec9cdf (2026-10-03), on macOS and Linux (Ubuntu 24.04, in CI). For each one: what goes wrong, why, the workaround and what it costs, and how to check that a fix makes it removable. Removing a workaround is the acceptance test: delete it, then build from a clean tree (`bmake clean`, or delete every `build/` and `work/`), since an incremental build can hide a regression (see "ImGui's include path" in the resolved list).
 
-**Workarounds in place:** none.
+**Workarounds in place:** none, on macOS or Linux.
 
 **Restrictions not worked around**
-- *The first rebuild after a clean build re-runs laz-perf's CMake configure and install once* ("Check for working CXX compiler … built via FETCH_BUILD=cmake"); every build after that is silent. It costs about 5 s, once.
+- *A static library's OpenMP runtime doesn't follow it through `LIBS=`:* `render.tst`, linking `libgeo.a` (built with `OPENMP=yes`), failed with undefined `___kmpc_*` symbols until it set `OPENMP=yes` itself, as `lasviewer.m` does.
+- *From a clean tree, `bmake test` alone fails at the workspace:* each tested module now builds itself first (`test` depends on `all`), but the frameworks without tests (GIS, GUI) are never built, so Geo and Viewer compile without glm's and GLFW's staged headers (`'glm/glm.hpp' file not found`). Run `bmake` before `bmake test` on a clean tree (`scripts/ci.sh build` does); after that, `bmake test` alone is enough, library changes included.
 - *Fetched upstream builds can't be cross-compiled* (`FETCH_BUILD=cmake` drops cross flags). Cross-compiling is out of scope for lasviewer for now.
 
 **Resolved in bmake-it, workarounds removed**
+- *In 87048cd (round 6, first Linux build):*
+  - fetched CMake builds failed on every non-macOS host (`/bin/sh: Syntax error: ")" unexpected`: a `;` was missing after the non-macOS deployment-target prologue); `ci.sh` passed `_FETCH_DEPLOY_EXPORT=:;`;
+  - imports whose headers are in `/usr/include` had no include directory to stage from (`pkg-config --cflags` omits it); `ci.sh` passed `GLM_CFLAGS=-I/usr/include`;
+  - staging a versioned shared library made of symlinks linked its real name to itself; `ci.sh` gave GLFW as a prefix of copied files;
+  - `bmake test` ran the tests against the previous library (a test written to fail on the old `point_cloud.cpp` passed); it now rebuilds the module first;
+  - hidden files (macOS `._x.cpp` sidecars) were compiled as sources;
+  - a legitimately rebuilt program printed `copy-up collision` warnings.
+- *In 943b3b2:* the first rebuild after a clean build no longer re-runs laz-perf's CMake configure.
 - *In c4d7295 (round 5):*
   - `REQUIRES=header:` also looks under the tool prefixes the import probe uses, so `REQUIRES=header:glm/glm.hpp` passes with MacPorts clang (which doesn't search `/opt/local/include`); `GIS/libglm.m` declares it.
   - A failed framework stops the ones that depend on it: a forced GIS failure now reports `framework Geo skipped: prerequisite GIS failed` and `Viewer … (root cause: GIS)` instead of burying the real error under `glm.hpp not found`.
@@ -446,16 +454,23 @@ Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/la
 - *In 7ad19d9:* imported macOS dylibs were staged as dangling symlinks.
 
 ### 12.2d
-**Prerequisites versus fetched modules.** A dependency that can be downloaded from one single source (a release archive) for every supported platform is a fetched module, built by bmake-it. Anything else is a **prerequisite**, installed with the platform's own package manager before building, all from one source (no mixing of package managers). Today: GDAL, GLFW, glm and the OpenMP runtime are prerequisites; laz-perf, copc-lib and Dear ImGui are fetched. README → Prerequisites lists the package names per platform. Modules declare what they check with `REQUIRES=` (bmake-it: `pkg-config --exists`, else `command -v`): `gdal` and `glfw3` on their import modules, `cmake` on the two CMake-built ones. glm has no pkg-config file and no command, so it can't be declared this way; it is found through its `mk/pre.<os>.mk` hook.
+**Prerequisites versus fetched modules.** A dependency that can be downloaded from one single source (a release archive) for every supported platform is a fetched module, built by bmake-it. Anything else is a **prerequisite**, installed with the platform's own package manager before building, all from one source (no mixing of package managers). Today: GDAL, GLFW, glm and the OpenMP runtime are prerequisites; laz-perf, copc-lib and Dear ImGui are fetched. README → Prerequisites lists the package names per platform. Modules declare what they check with `REQUIRES=` (bmake-it: `pkg-config --exists`, else `command -v`): `gdal` and `glfw3` on their import modules, `cmake` on the two CMake-built ones. glm, header-only, is declared with `REQUIRES=header:glm/glm.hpp`.
 
 ### 12.3
-`bmake test` builds and runs the atf-c++ tests with Kyua: `Geo/libgeo.m/tests/{raster_test,las_test,height_model_test}.cpp` (linked against `libgeo.a`) and `Viewer/lasviewer.m/tests/{basic_test,scene_test}.cpp` (linked against the viewer's objects except `main.o`). JUnit results go to `build/<key>/runs/<run>/test-results.xml` in each module; `REPORT=yes` adds a Kyua HTML report. `SANITIZE=address` builds everything with AddressSanitizer (the tests and a MNT + MNH + COPC scene ran clean with it on 2026-09-30).
+`bmake test` builds and runs the atf-c++ tests with Kyua: `Geo/libgeo.m/tests/{raster_test,las_test,height_model_test}.cpp` (linked against `libgeo.a`) and `Viewer/lasviewer.m/tests/{basic_test,scene_test,dem_test,cli_test,copc_test}.cpp` (linked against the viewer's objects except `main.o`). On a clean tree run `bmake` first (§12.2c); afterwards `bmake test` rebuilds what changed.
+
+**Render tests** (`Viewer/render.tst`, a bmake-it `.tst` test module: built by `bmake`, run by `bmake test`, never copied up or shipped). `PLATFORMS=macos`: they run `lasviewer --snapshot`, which needs a GPU and a display, so they're skipped where there is none (CI's Linux runners), with `REASON.macos` saying why. `render_tool` (the module's utility, `PROG=`) writes synthetic DEMs and measures snapshots; `testcases/dem_render.sh` (atf-sh) is the test, finding `lasviewer` on `PATH` (the workspace `bin/`):
+- `crack_free`: a terrain with relief at every scale (octaves 200 m … 3 m, so a 20° collapse angle gives levels 1–6 and many transitions), rendered from below the surface in 4 views; any background pixel enclosed by surface is a hole through the mesh. Verified to fail with the old 1:1 transition rule (16–222 holes per view) and to pass now (0).
+- `mnt_mnh`: a terrain with a height model (8 m blocks) loads, pairs and renders. JUnit results go to `build/<key>/runs/<run>/test-results.xml` in each module; `REPORT=yes` adds a Kyua HTML report. `SANITIZE=address` builds everything with AddressSanitizer (the tests and a MNT + MNH + COPC scene ran clean with it on 2026-09-30).
 
 ### 12.4
-`.clang-tidy` config: bugprone-*, cert-*, misc-*, modernize-*, performance-*, readability-* checks. Magic numbers and identifier length suppressed.
+**Naming, enforced** (`.clang-tidy`, `readability-identifier-naming` only, as errors): types, template parameters and enum values `CamelCase`; functions, methods, variables, parameters and members `camelBack`; private and protected members `camelBack_`; constants (`constexpr`, global/static `const`) `kCamelCase`; namespaces `lower_case`; macros `UPPER_CASE`; one or two capitals allowed as math notation (`A`…`F`, `V`, `P`, `VP`, `W`, `H`, `L`, `K`); atf-c++ test case names keep snake_case. Checked on the project's sources and headers (`Geo/include`, `Viewer/local/include`), not on staged third-party headers.
 
 ### 12.5
-`.clang-format` config: LLVM base, C++17, 100-column limit, 4-space indent, attached braces.
+**Formatting, enforced** (`.clang-format`): LLVM base, C++17, 100 columns, 4-space indent, attached braces, left pointers, one-line `if`/loops allowed, no alignment of consecutive assignments, includes grouped as project / third-party libraries / standard library. `bmake lint` (`scripts/lint.sh`) checks both 12.4 and 12.5 and fails on any deviation; `bmake lint-fix` applies them. Both tools are pinned to version 22 (CI installs 22.1.8 from PyPI): other versions may format slightly differently.
+
+### 12.5b
+**CI** (`.github/workflows/ci.yml`): on every push to `main` and every pull request, on Ubuntu 24.04: prerequisites from apt, then bmake-it at a pinned commit (8ec9cdf), `bmake`, `bmake test`, `bmake lint`, with no workaround (the render tests are skipped there: `PLATFORMS=macos`) — the steps of `scripts/ci.sh deps|build|lint`, which reproduce it on any Debian/Ubuntu machine or container. The tests don't draw, so no GPU is needed. Test results (JUnit XML and logs) are kept as a workflow artifact.
 
 ### 12.6
 `bmake docs` generates Doxygen HTML from `Geo`'s public `include/` (`Geo/docs/html/`, git-ignored) and a workspace page in `build/docs/index.html`. `GIS`, `GUI` (imported headers only) and `Viewer` (framework-local headers only) set `DOCS=no`.
@@ -465,7 +480,7 @@ Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/la
 ## 13. Testing
 
 ### 13.1
-Four atf-c++ test programs, run by `bmake test` (§12.3): `basic_test` re-derives formulas locally; `scene_test` tests the real frame and camera code; `raster_test` tests the real GDAL raster I/O on GeoTIFFs it writes itself: pixel-center georeferencing, downsampling and affine rescale, `.tfw` world files, declared and undeclared nodata, Terrain RGB decoding, horizontal CRS comparison and extent transformation, warping a DEM from EPSG:4326 into EPSG:2154 (value checked at a transformed point), and a rotated grid made north-up; `las_test` checks the LAS code on files it writes byte by byte: record layouts per point format, a LAS 1.2 file (format 2, CRS as GeoTIFF keys) and a LAS 1.4 file (format 7, 64-bit count, CRS as WKT in an extended VLR, compound CRS), with bounds, point count, EPSG, decoded positions and RGB.
+Eight atf-c++ test programs, run by `bmake test` (§12.3). `dem_test` tests the real DEM quadtree and mesh build (§9.7, §6v of the design document); `cli_test` the command line, with GeoTIFFs it writes to check the classification by content; `copc_test` the COPC streaming on a small COPC file it writes with copc-lib: tile layout, octree depth per resolution, every point loaded exactly once across tile borders, oriented boxes and point spacing, level of detail; `height_model_test` the MNT/MNH/MNS composition; `las_test` also covers the streamed thinning of a 2.56M-point cloud. `basic_test` re-derives formulas locally; `scene_test` tests the real frame and camera code; `raster_test` tests the real GDAL raster I/O on GeoTIFFs it writes itself: pixel-center georeferencing, downsampling and affine rescale, `.tfw` world files, declared and undeclared nodata, Terrain RGB decoding, horizontal CRS comparison and extent transformation, warping a DEM from EPSG:4326 into EPSG:2154 (value checked at a transformed point), and a rotated grid made north-up; `las_test` checks the LAS code on files it writes byte by byte: record layouts per point format, a LAS 1.2 file (format 2, CRS as GeoTIFF keys) and a LAS 1.4 file (format 7, 64-bit count, CRS as WKT in an extended VLR, compound CRS), with bounds, point count, EPSG, decoded positions and RGB.
 
 ### 13.2
 Test coverage:
@@ -476,7 +491,7 @@ Test coverage:
 6. Morton (Z-order) code interleaving
 7. Near/far plane computation from bbox corners
 8. Elevation gradient color ramp
-9. Tile LOD resolution computation — mirrors the current PCA/OBB projected-area algorithm in `Viewer/lasviewer.m/src/copc_streamer.cpp` (§5.4), not the earlier radius-based formula. Keeping this test in sync with `desiredResolution()` whenever that function changes is a manual step since the test replicates the formula rather than linking against it.
+9. Tile LOD resolution computation — `basic_test` still mirrors the formula; `copc_test` now tests the real `desiredResolution()` and `computeTileObb()`.
 
 ### 13.3
 Tests use atf-c++ (`ATF_TEST_CASE`, `ATF_REQUIRE`); Kyua runs each test case in its own scratch directory and reports pass/fail per case.

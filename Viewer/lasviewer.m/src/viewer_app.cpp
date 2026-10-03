@@ -1,15 +1,16 @@
 // viewer_app.cpp — window, GL setup, frame loop and input routing.
 // The ImGui panels live in viewer_ui.cpp.
 #include "viewer_app.h"
+
 #include "dem_tess_mesh.h"
 #include "shaders.h"
 
 #include <imgui.h>
-#include <imgui_impl_glfw.h>
-#include <imgui_impl_opengl3.h>
 
 #include <cmath>
 #include <cstdio>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
 #include <iostream>
 #include <vector>
 
@@ -19,12 +20,24 @@ ViewerApp* appFrom(GLFWwindow* w) {
     return static_cast<ViewerApp*>(glfwGetWindowUserPointer(w));
 }
 
-void keyCb(GLFWwindow* w, int key, int, int action, int mods) { appFrom(w)->onKey(key, action, mods); }
-void charCb(GLFWwindow* w, unsigned int c) { appFrom(w)->onChar(c); }
-void mouseButtonCb(GLFWwindow* w, int b, int action, int mods) { appFrom(w)->onMouseButton(b, action, mods); }
-void cursorCb(GLFWwindow* w, double x, double y) { appFrom(w)->onCursor(x, y); }
-void scrollCb(GLFWwindow* w, double, double dy) { appFrom(w)->onScroll(dy); }
-void fbSizeCb(GLFWwindow* w, int width, int height) { appFrom(w)->onFramebufferSize(width, height); }
+void keyCb(GLFWwindow* w, int key, int, int action, int mods) {
+    appFrom(w)->onKey(key, action, mods);
+}
+void charCb(GLFWwindow* w, unsigned int c) {
+    appFrom(w)->onChar(c);
+}
+void mouseButtonCb(GLFWwindow* w, int b, int action, int mods) {
+    appFrom(w)->onMouseButton(b, action, mods);
+}
+void cursorCb(GLFWwindow* w, double x, double y) {
+    appFrom(w)->onCursor(x, y);
+}
+void scrollCb(GLFWwindow* w, double, double dy) {
+    appFrom(w)->onScroll(dy);
+}
+void fbSizeCb(GLFWwindow* w, int width, int height) {
+    appFrom(w)->onFramebufferSize(width, height);
+}
 
 // A proportional TrueType font if one is installed; ImGui's built-in
 // bitmap font otherwise.
@@ -200,9 +213,9 @@ void ViewerApp::drawLoadingFrame(const std::string& message) {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f,
-                                   vp->WorkPos.y + vp->WorkSize.y * 0.5f),
-                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowPos(
+        ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f),
+        ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::Begin("##loading", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                      ImGuiWindowFlags_NoSavedSettings);
@@ -267,7 +280,8 @@ bool ViewerApp::saveSnapshot(const std::string& path) {
     }
     std::fprintf(f, "P6\n%d %d\n255\n", fbW_, fbH_);
     for (int y = fbH_ - 1; y >= 0; --y) // GL rows are bottom-up
-        std::fwrite(px.data() + static_cast<size_t>(y) * fbW_ * 3, 1, static_cast<size_t>(fbW_) * 3, f);
+        std::fwrite(px.data() + static_cast<size_t>(y) * fbW_ * 3, 1, static_cast<size_t>(fbW_) * 3,
+                    f);
     std::fclose(f);
     std::cerr << "[snapshot] wrote " << path << " (" << fbW_ << "x" << fbH_ << ")" << std::endl;
     return true;
@@ -315,8 +329,10 @@ void ViewerApp::renderFrame() {
     }
     // Next frame's occlusion culling uses this frame's depth, opaque layers
     // only.
-    if (wantHiZ && hizOk_ && settings_.useOcclusion) hiz_.build(fbW_, fbH_);
-    else if (hizOk_) hiz_.invalidate();
+    if (wantHiZ && hizOk_ && settings_.useOcclusion)
+        hiz_.build(fbW_, fbH_);
+    else if (hizOk_)
+        hiz_.invalidate();
     for (auto& layer : scene_.layers)
         if (layer->visible && layer->transparent()) layer->render(ctx);
 
@@ -344,14 +360,14 @@ void ViewerApp::handlePick() {
         std::cerr << "[pick] missed geometry" << std::endl;
         return;
     }
-    glm::vec3 p = camera_.unproject(2.0f * fbX / fbW_ - 1.0f, 2.0f * glY / fbH_ - 1.0f,
-                                    depth * 2.0f - 1.0f);
+    glm::vec3 p =
+        camera_.unproject(2.0f * fbX / fbW_ - 1.0f, 2.0f * glY / fbH_ - 1.0f, depth * 2.0f - 1.0f);
     if (!controller_.focusOn(p)) return;
     glm::vec3 unscaled(p.x, p.y / settings_.zScale, p.z);
     lastPick_ = scene_.frame.toWorld(unscaled);
     hasPick_ = true;
-    std::cerr << "[pick] focused on " << std::fixed << lastPick_.x << ", " << lastPick_.y
-              << ", " << lastPick_.z << std::defaultfloat << std::endl;
+    std::cerr << "[pick] focused on " << std::fixed << lastPick_.x << ", " << lastPick_.y << ", "
+              << lastPick_.z << std::defaultfloat << std::endl;
 }
 
 void ViewerApp::applyToLayers(LayerAction a) {
@@ -402,15 +418,33 @@ void ViewerApp::onChar(unsigned int c) {
     if (ImGui::GetIO().WantCaptureKeyboard) return;
     if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
     switch (c) {
-    case 'h': ui_.showHelp = !ui_.showHelp; break;
-    case 'l': ui_.showLog = !ui_.showLog; break;
-    case 'b': settings_.showTileBoxes = !settings_.showTileBoxes; break;
-    case 'c': applyToLayers(LayerAction::ToggleColors); break;
-    case 'w': applyToLayers(LayerAction::ToggleWireframe); break;
-    case 'a': applyToLayers(LayerAction::ToggleDisplacement); break;
-    case 'g': applyToLayers(LayerAction::ToggleMasterEdges); break;
-    case 'i': applyToLayers(LayerAction::CollapseFiner); break;
-    case 'o': applyToLayers(LayerAction::CollapseCoarser); break;
+    case 'h':
+        ui_.showHelp = !ui_.showHelp;
+        break;
+    case 'l':
+        ui_.showLog = !ui_.showLog;
+        break;
+    case 'b':
+        settings_.showTileBoxes = !settings_.showTileBoxes;
+        break;
+    case 'c':
+        applyToLayers(LayerAction::ToggleColors);
+        break;
+    case 'w':
+        applyToLayers(LayerAction::ToggleWireframe);
+        break;
+    case 'a':
+        applyToLayers(LayerAction::ToggleDisplacement);
+        break;
+    case 'g':
+        applyToLayers(LayerAction::ToggleMasterEdges);
+        break;
+    case 'i':
+        applyToLayers(LayerAction::CollapseFiner);
+        break;
+    case 'o':
+        applyToLayers(LayerAction::CollapseCoarser);
+        break;
     case 'f':
         settings_.pointDensityMul = std::min(settings_.pointDensityMul * 1.5f, 8.0f);
         applyToLayers(LayerAction::Finer);
@@ -419,16 +453,35 @@ void ViewerApp::onChar(unsigned int c) {
         settings_.pointDensityMul = std::max(settings_.pointDensityMul / 1.5f, 0.1f);
         applyToLayers(LayerAction::Coarser);
         break;
-    case 'n': settings_.pointSizeMul = std::max(settings_.pointSizeMul / 1.3f, 0.1f); break;
-    case 'm': settings_.pointSizeMul = std::min(settings_.pointSizeMul * 1.3f, 10.0f); break;
-    case 'e': settings_.zScale = std::min(settings_.zScale * 1.2f, 100.0f); break;
-    case 'd': settings_.zScale = std::max(settings_.zScale / 1.2f, 0.01f); break;
-    case 'u': settings_.zScale = 1.0f; break;
-    case 'r': resetView(); break;
-    case 'p': camera_.ortho = !camera_.ortho; break;
-    case 'v': controller_.sideView(); break;
-    case 't': controller_.topView(); break;
-    default: break;
+    case 'n':
+        settings_.pointSizeMul = std::max(settings_.pointSizeMul / 1.3f, 0.1f);
+        break;
+    case 'm':
+        settings_.pointSizeMul = std::min(settings_.pointSizeMul * 1.3f, 10.0f);
+        break;
+    case 'e':
+        settings_.zScale = std::min(settings_.zScale * 1.2f, 100.0f);
+        break;
+    case 'd':
+        settings_.zScale = std::max(settings_.zScale / 1.2f, 0.01f);
+        break;
+    case 'u':
+        settings_.zScale = 1.0f;
+        break;
+    case 'r':
+        resetView();
+        break;
+    case 'p':
+        camera_.ortho = !camera_.ortho;
+        break;
+    case 'v':
+        controller_.sideView();
+        break;
+    case 't':
+        controller_.topView();
+        break;
+    default:
+        break;
     }
 }
 

@@ -3,6 +3,7 @@
 #include "raster.h"
 #include "scene_frame.h"
 
+#include <atf-c++.hpp>
 #include <cpl_conv.h>
 #include <gdal_priv.h>
 #include <ogr_spatialref.h>
@@ -14,12 +15,11 @@
 #include <string>
 #include <vector>
 
-#include <atf-c++.hpp>
-
 #define CHECK(cond) ATF_REQUIRE(cond)
 
-static bool near(double a, double b, double tol) { return std::abs(a - b) <= tol; }
-
+static bool near(double a, double b, double tol) {
+    return std::abs(a - b) <= tol;
+}
 
 static std::string wktOf(const char* userInput) {
     OGRSpatialReference s;
@@ -63,7 +63,11 @@ ATF_TEST_CASE_WITHOUT_HEAD(test_ortho_georef_pixel_center);
 ATF_TEST_CASE_BODY(test_ortho_georef_pixel_center) {
     const double gt[6] = {1000.0, 2.0, 0.0, 5000.0, 0.0, -2.0};
     std::vector<double> r(100), g(100), b(100);
-    for (int i = 0; i < 100; ++i) { r[i] = i; g[i] = 2 * i; b[i] = 255 - i; }
+    for (int i = 0; i < 100; ++i) {
+        r[i] = i;
+        g[i] = 2 * i;
+        b[i] = 255 - i;
+    }
     std::string p = writeTiff("ortho.tif", 10, 10, 3, GDT_Byte, gt, "EPSG:2154", {r, g, b});
     Orthophoto o;
     CHECK(loadOrthophoto(p, o, 1'000'000, ""));
@@ -120,8 +124,8 @@ ATF_TEST_CASE_BODY(test_dem_nodata) {
     CHECK(d.isNodata(0.0f) && !d.isNodata(5.0f) && !d.isNodata(-9999.0f));
     CHECK(d.elevations.size() == 4 && d.elevations[3] == 15.0f);
 
-    std::string q = writeTiff("dem_plain.tif", 2, 2, 1, GDT_Float32, gt, "EPSG:2154",
-                              {{-9999, 1, 2, 3}});
+    std::string q =
+        writeTiff("dem_plain.tif", 2, 2, 1, GDT_Float32, gt, "EPSG:2154", {{-9999, 1, 2, 3}});
     DemRaster e;
     CHECK(loadDEM(q, e, ""));
     CHECK(!e.hasNodata && e.isNodata(-9999.0f) && !e.isNodata(0.0f));
@@ -132,8 +136,7 @@ ATF_TEST_CASE_WITHOUT_HEAD(test_dem_terrain_rgb);
 ATF_TEST_CASE_BODY(test_dem_terrain_rgb) {
     const double gt[6] = {0.0, 1.0, 0.0, 10.0, 0.0, -1.0};
     // 1234.5 m → (1234.5 + 10000) / 0.1 = 112345 = 1*65536 + 182*256 + 217
-    std::string p = writeTiff("trgb.tif", 1, 1, 3, GDT_Byte, gt, "EPSG:2154",
-                              {{1}, {182}, {217}});
+    std::string p = writeTiff("trgb.tif", 1, 1, 3, GDT_Byte, gt, "EPSG:2154", {{1}, {182}, {217}});
     DemRaster d;
     CHECK(loadDEM(p, d, ""));
     CHECK(d.terrainRGB);
@@ -143,7 +146,8 @@ ATF_TEST_CASE_BODY(test_dem_terrain_rgb) {
 // CRS helpers: a compound CRS matches its horizontal part.
 ATF_TEST_CASE_WITHOUT_HEAD(test_crs_helpers);
 ATF_TEST_CASE_BODY(test_crs_helpers) {
-    std::string l93 = wktOf("EPSG:2154"), l93ngf = wktOf("EPSG:2154+5720"), wgs = wktOf("EPSG:4326");
+    std::string l93 = wktOf("EPSG:2154"), l93ngf = wktOf("EPSG:2154+5720"),
+                wgs = wktOf("EPSG:4326");
     CHECK(sameHorizontalCRS(l93, l93ngf));
     CHECK(!sameHorizontalCRS(l93, wgs));
     CHECK(!sameHorizontalCRS(l93, ""));
@@ -167,7 +171,8 @@ ATF_TEST_CASE_BODY(test_dem_warped_into_scene_crs) {
     const double gt[6] = {lon0, step, 0.0, lat0, 0.0, -step};
     std::vector<double> v(n * n);
     for (int y = 0; y < n; ++y)
-        for (int x = 0; x < n; ++x) v[y * n + x] = 1000.0 + 10000.0 * (lon0 + (x + 0.5) * step - lon0);
+        for (int x = 0; x < n; ++x)
+            v[y * n + x] = 1000.0 + 10000.0 * (lon0 + (x + 0.5) * step - lon0);
     std::string p = writeTiff("dem_wgs.tif", n, n, 1, GDT_Float32, gt, "EPSG:4326", {v});
 
     std::string l93 = wktOf("EPSG:2154");
@@ -210,7 +215,11 @@ ATF_TEST_CASE_BODY(test_dem_rotated_grid_made_north_up) {
     CHECK(d.reprojected && d.B == 0.0 && d.D == 0.0 && d.epsg == 2154);
     // The rotated square covers roughly half of its north-up bounding box.
     size_t valid = 0;
-    for (float e : d.elevations) if (!d.isNodata(e)) { ++valid; CHECK(near(e, 42.0, 1e-3)); }
+    for (float e : d.elevations)
+        if (!d.isNodata(e)) {
+            ++valid;
+            CHECK(near(e, 42.0, 1e-3));
+        }
     CHECK(valid > d.elevations.size() / 3 && valid < d.elevations.size());
 }
 

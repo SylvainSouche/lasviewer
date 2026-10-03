@@ -1,5 +1,6 @@
 // las_format.cpp — see las_format.h.
 #include "las_format.h"
+
 #include "raster.h"
 
 #include <cpl_conv.h>
@@ -26,8 +27,7 @@ bool lasRecordLayout(int formatId, int recordLength, const glm::dvec3& scale,
 
 namespace {
 
-template <typename T>
-bool readAt(std::ifstream& f, uint64_t pos, T& value) {
+template <typename T> bool readAt(std::ifstream& f, uint64_t pos, T& value) {
     f.seekg(static_cast<std::streamoff>(pos));
     f.read(reinterpret_cast<char*>(&value), sizeof(T));
     return static_cast<bool>(f);
@@ -115,8 +115,8 @@ int epsgFromGeoKeys(const std::vector<char>& data) {
     for (size_t i = 0; i < keys && 4 + i * 4 + 3 < n; ++i) {
         uint16_t id = k[4 + i * 4], location = k[5 + i * 4], value = k[7 + i * 4];
         if (location != 0 || value == 0 || value == 32767) continue; // not an inline EPSG code
-        if (id == 3072) projected = value;  // ProjectedCSTypeGeoKey
-        if (id == 2048) geographic = value; // GeographicTypeGeoKey
+        if (id == 3072) projected = value;                           // ProjectedCSTypeGeoKey
+        if (id == 2048) geographic = value;                          // GeographicTypeGeoKey
     }
     return projected ? projected : geographic;
 }

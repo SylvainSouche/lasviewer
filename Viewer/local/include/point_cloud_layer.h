@@ -6,7 +6,7 @@
 struct Orthophoto;
 
 class PointCloudLayer : public Layer {
-public:
+  public:
     // ortho: used for coloring when non-null (caller checks it covers the cloud).
     PointCloudLayer(const std::string& path, const Orthophoto* ortho);
     ~PointCloudLayer() override;
@@ -20,7 +20,7 @@ public:
     std::string status() const override;
     void handleAction(LayerAction a) override;
 
-private:
+  private:
     void setUseOrtho(bool useOrtho);
 
     const Orthophoto* ortho_;

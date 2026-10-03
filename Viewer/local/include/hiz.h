@@ -7,35 +7,37 @@
 // design: the only failure mode is a newly revealed box missing for a frame.
 #pragma once
 #include "gl_platform.h"
+
 #include <glm/glm.hpp>
+
 #include <vector>
 
 class HiZ {
-public:
+  public:
     bool init();
     void destroy();
     // Default framebuffer depth → pyramid → CPU readback.
     void build(int viewportW, int viewportH);
-    bool ready() const { return hizReady; }
+    bool ready() const { return hizReady_; }
     // Forget the pyramid (when a frame was drawn without building one).
-    void invalidate() { hizReady = false; }
+    void invalidate() { hizReady_ = false; }
     // lo/hi: GL-space box with the Z exaggeration already applied.
     bool isOccluded(const glm::vec3& lo, const glm::vec3& hi, const glm::mat4& VP) const;
 
-private:
+  private:
     void resizeHiZIfNeeded(int viewportW, int viewportH);
 
-    GLuint hizCopyProgram = 0, hizDownsampleProgram = 0;
-    GLuint hizFullscreenVAO = 0;
-    GLuint hizFBO = 0;
-    GLuint hizDepthCaptureTex = 0; // GL_DEPTH_COMPONENT32F, blit target
-    GLuint hizPyramidTex = 0;      // GL_R32F, mipmapped
-    int hizCaptureW = 0, hizCaptureH = 0;
-    int hizLevels = 0;
-    int hizReadLevel = 0;
-    int hizReadW = 0, hizReadH = 0;
-    std::vector<float> hizReadback;
-    bool hizReady = false;
+    GLuint hizCopyProgram_ = 0, hizDownsampleProgram_ = 0;
+    GLuint hizFullscreenVAO_ = 0;
+    GLuint hizFBO_ = 0;
+    GLuint hizDepthCaptureTex_ = 0; // GL_DEPTH_COMPONENT32F, blit target
+    GLuint hizPyramidTex_ = 0;      // GL_R32F, mipmapped
+    int hizCaptureW_ = 0, hizCaptureH_ = 0;
+    int hizLevels_ = 0;
+    int hizReadLevel_ = 0;
+    int hizReadW_ = 0, hizReadH_ = 0;
+    std::vector<float> hizReadback_;
+    bool hizReady_ = false;
 };
 
 // True when the GL-space box is entirely outside one clip plane.
