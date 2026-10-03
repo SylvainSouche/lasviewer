@@ -6,17 +6,17 @@
 #include <iostream>
 
 bool HiZ::init() {
-    hizCopyProgram = shaders::linkProgram(shaders::kHiZVert, shaders::kHiZCopyFrag);
-    hizDownsampleProgram = shaders::linkProgram(shaders::kHiZVert, shaders::kHiZDownsampleFrag);
-    if (!hizCopyProgram || !hizDownsampleProgram) {
+    hizCopyProgram_ = shaders::linkProgram(shaders::kHiZVert, shaders::kHiZCopyFrag);
+    hizDownsampleProgram_ = shaders::linkProgram(shaders::kHiZVert, shaders::kHiZDownsampleFrag);
+    if (!hizCopyProgram_ || !hizDownsampleProgram_) {
         std::cerr << "[occlusion] Hi-Z shader setup failed — occlusion culling disabled"
                   << std::endl;
-        if (hizCopyProgram) { glDeleteProgram(hizCopyProgram); hizCopyProgram = 0; }
-        if (hizDownsampleProgram) { glDeleteProgram(hizDownsampleProgram); hizDownsampleProgram = 0; }
+        if (hizCopyProgram_) { glDeleteProgram(hizCopyProgram_); hizCopyProgram_ = 0; }
+        if (hizDownsampleProgram_) { glDeleteProgram(hizDownsampleProgram_); hizDownsampleProgram_ = 0; }
         return false;
     }
-    glGenVertexArrays(1, &hizFullscreenVAO);
-    glGenFramebuffers(1, &hizFBO);
+    glGenVertexArrays(1, &hizFullscreenVAO_);
+    glGenFramebuffers(1, &hizFBO_);
     return true;
 }
 
@@ -24,17 +24,17 @@ bool HiZ::init() {
 static const int kHiZTargetReadSize = 64;
 
 void HiZ::resizeHiZIfNeeded(int viewportW, int viewportH) {
-    if (!hizCopyProgram || !hizDownsampleProgram) return; // init failed — disabled
+    if (!hizCopyProgram_ || !hizDownsampleProgram_) return; // init failed — disabled
     if (viewportW <= 0 || viewportH <= 0) return;
-    if (viewportW == hizCaptureW && viewportH == hizCaptureH && hizPyramidTex != 0) {
+    if (viewportW == hizCaptureW_ && viewportH == hizCaptureH_ && hizPyramidTex_ != 0) {
         return; // already correctly sized
     }
-    hizCaptureW = viewportW;
-    hizCaptureH = viewportH;
+    hizCaptureW_ = viewportW;
+    hizCaptureH_ = viewportH;
 
-    if (hizDepthCaptureTex) { glDeleteTextures(1, &hizDepthCaptureTex); hizDepthCaptureTex = 0; }
-    glGenTextures(1, &hizDepthCaptureTex);
-    glBindTexture(GL_TEXTURE_2D, hizDepthCaptureTex);
+    if (hizDepthCaptureTex_) { glDeleteTextures(1, &hizDepthCaptureTex_); hizDepthCaptureTex_ = 0; }
+    glGenTextures(1, &hizDepthCaptureTex_);
+    glBindTexture(GL_TEXTURE_2D, hizDepthCaptureTex_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, viewportW, viewportH, 0,
                  GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -42,9 +42,9 @@ void HiZ::resizeHiZIfNeeded(int viewportW, int viewportH) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    if (hizPyramidTex) { glDeleteTextures(1, &hizPyramidTex); hizPyramidTex = 0; }
-    glGenTextures(1, &hizPyramidTex);
-    glBindTexture(GL_TEXTURE_2D, hizPyramidTex);
+    if (hizPyramidTex_) { glDeleteTextures(1, &hizPyramidTex_); hizPyramidTex_ = 0; }
+    glGenTextures(1, &hizPyramidTex_);
+    glBindTexture(GL_TEXTURE_2D, hizPyramidTex_);
 
     int levels = 1;
     int w = viewportW, h = viewportH;
@@ -53,10 +53,10 @@ void HiZ::resizeHiZIfNeeded(int viewportW, int viewportH) {
         h = std::max(1, h / 2);
         ++levels;
     }
-    hizLevels = levels;
-    hizReadLevel = levels - 1;
-    hizReadW = std::max(1, viewportW >> hizReadLevel);
-    hizReadH = std::max(1, viewportH >> hizReadLevel);
+    hizLevels_ = levels;
+    hizReadLevel_ = levels - 1;
+    hizReadW_ = std::max(1, viewportW >> hizReadLevel_);
+    hizReadH_ = std::max(1, viewportH >> hizReadLevel_);
 
     for (int lvl = 0; lvl < levels; ++lvl) {
         int lw = std::max(1, viewportW >> lvl);
@@ -71,20 +71,20 @@ void HiZ::resizeHiZIfNeeded(int viewportW, int viewportH) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, levels - 1);
 
     // 1.0 = far/empty — a conservative "nothing occluded yet" default
-    // until the first real build completes (hizReady stays false until
+    // until the first real build completes (hizReady_ stays false until
     // then regardless, but this avoids the vector holding uninitialized
     // memory in the meantime).
-    hizReadback.assign(static_cast<size_t>(hizReadW) * hizReadH, 1.0f);
-    hizReady = false;
+    hizReadback_.assign(static_cast<size_t>(hizReadW_) * hizReadH_, 1.0f);
+    hizReady_ = false;
     std::cerr << "[occlusion] Hi-Z pyramid (re)sized: " << viewportW << "x" << viewportH
               << ", " << levels << " levels, CPU readback at "
-              << hizReadW << "x" << hizReadH << std::endl;
+              << hizReadW_ << "x" << hizReadH_ << std::endl;
 }
 
 void HiZ::build(int viewportW, int viewportH) {
-    if (!hizCopyProgram || !hizDownsampleProgram) return; // init failed — disabled
+    if (!hizCopyProgram_ || !hizDownsampleProgram_) return; // init failed — disabled
     resizeHiZIfNeeded(viewportW, viewportH);
-    if (!hizPyramidTex || !hizDepthCaptureTex || !hizFBO) return;
+    if (!hizPyramidTex_ || !hizDepthCaptureTex_ || !hizFBO_) return;
 
     // Runs after all scene drawing; save and restore the GL state it touches
     // so later passes (overlays, UI, picking) are unaffected.
@@ -101,47 +101,47 @@ void HiZ::build(int viewportW, int viewportH) {
 
     // Step 1: blit the real depth buffer — the default framebuffer (this
     // app renders directly to it, never through an intermediate FBO) —
-    // into hizDepthCaptureTex.
+    // into hizDepthCaptureTex_.
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, hizFBO);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, hizFBO_);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                           GL_TEXTURE_2D, hizDepthCaptureTex, 0);
+                           GL_TEXTURE_2D, hizDepthCaptureTex_, 0);
     GLenum drawBufNone = GL_NONE;
     glDrawBuffers(1, &drawBufNone); // depth-only target this pass, no color buffer
     glBlitFramebuffer(0, 0, viewportW, viewportH, 0, 0, viewportW, viewportH,
                       GL_DEPTH_BUFFER_BIT, GL_NEAREST);
 
     // Step 2: copy pass — depth texture -> mip 0 of the Hi-Z pyramid.
-    glBindFramebuffer(GL_FRAMEBUFFER, hizFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, hizFBO_);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_2D, hizPyramidTex, 0);
+                           GL_TEXTURE_2D, hizPyramidTex_, 0);
     GLenum drawBufColor0 = GL_COLOR_ATTACHMENT0;
     glDrawBuffers(1, &drawBufColor0);
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
     glViewport(0, 0, viewportW, viewportH);
-    glUseProgram(hizCopyProgram);
+    glUseProgram(hizCopyProgram_);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, hizDepthCaptureTex);
-    glUniform1i(glGetUniformLocation(hizCopyProgram, "uSrcDepth"), 0);
-    glBindVertexArray(hizFullscreenVAO);
+    glBindTexture(GL_TEXTURE_2D, hizDepthCaptureTex_);
+    glUniform1i(glGetUniformLocation(hizCopyProgram_, "uSrcDepth"), 0);
+    glBindVertexArray(hizFullscreenVAO_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
     // Step 3: successive 2x2 max-reduction passes, each sampling the
     // PREVIOUS Hi-Z mip (never the raw depth texture directly) and
     // rendering into the next.
-    glUseProgram(hizDownsampleProgram);
-    glBindTexture(GL_TEXTURE_2D, hizPyramidTex);
-    glUniform1i(glGetUniformLocation(hizDownsampleProgram, "uSrcMip"), 0);
-    GLint texelSizeLoc = glGetUniformLocation(hizDownsampleProgram, "uSrcTexelSize");
-    for (int lvl = 1; lvl <= hizReadLevel; ++lvl) {
+    glUseProgram(hizDownsampleProgram_);
+    glBindTexture(GL_TEXTURE_2D, hizPyramidTex_);
+    glUniform1i(glGetUniformLocation(hizDownsampleProgram_, "uSrcMip"), 0);
+    GLint texelSizeLoc = glGetUniformLocation(hizDownsampleProgram_, "uSrcTexelSize");
+    for (int lvl = 1; lvl <= hizReadLevel_; ++lvl) {
         int srcW = std::max(1, viewportW >> (lvl - 1));
         int srcH = std::max(1, viewportH >> (lvl - 1));
         int dstW = std::max(1, viewportW >> lvl);
         int dstH = std::max(1, viewportH >> lvl);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                               GL_TEXTURE_2D, hizPyramidTex, lvl);
+                               GL_TEXTURE_2D, hizPyramidTex_, lvl);
         glViewport(0, 0, dstW, dstH);
         glUniform2f(texelSizeLoc, 1.0f / srcW, 1.0f / srcH);
         // Restrict the sampler to read ONLY the source mip for this pass
@@ -154,15 +154,15 @@ void HiZ::build(int viewportW, int viewportH) {
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, hizLevels - 1);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, hizLevels_ - 1);
 
     // Step 4: read back JUST the small coarse target level — once per
     // frame, not per tile (see the class comment for why).
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_2D, hizPyramidTex, hizReadLevel);
-    hizReadback.resize(static_cast<size_t>(hizReadW) * hizReadH);
-    glReadPixels(0, 0, hizReadW, hizReadH, GL_RED, GL_FLOAT, hizReadback.data());
-    hizReady = true;
+                           GL_TEXTURE_2D, hizPyramidTex_, hizReadLevel_);
+    hizReadback_.resize(static_cast<size_t>(hizReadW_) * hizReadH_);
+    glReadPixels(0, 0, hizReadW_, hizReadH_, GL_RED, GL_FLOAT, hizReadback_.data());
+    hizReady_ = true;
 
     // Restore everything.
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
@@ -178,7 +178,7 @@ void HiZ::build(int viewportW, int viewportH) {
 // True only when the box's whole screen footprint lies behind the farthest
 // depth recorded there last frame.
 bool HiZ::isOccluded(const glm::vec3& lo, const glm::vec3& hi, const glm::mat4& VP) const {
-    if (!hizReady || hizReadback.empty()) return false; // nothing to test against yet
+    if (!hizReady_ || hizReadback_.empty()) return false; // nothing to test against yet
 
     const glm::vec3 corners[8] = {
         {lo.x, lo.y, lo.z}, {hi.x, lo.y, lo.z}, {lo.x, hi.y, lo.z}, {hi.x, hi.y, lo.z},
@@ -216,10 +216,10 @@ bool HiZ::isOccluded(const glm::vec3& lo, const glm::vec3& hi, const glm::mat4& 
     float u1 = std::clamp(maxNdcX * 0.5f + 0.5f, 0.0f, 1.0f);
     float v0 = std::clamp(minNdcY * 0.5f + 0.5f, 0.0f, 1.0f);
     float v1 = std::clamp(maxNdcY * 0.5f + 0.5f, 0.0f, 1.0f);
-    int px0 = std::clamp(static_cast<int>(u0 * hizReadW), 0, hizReadW - 1);
-    int px1 = std::clamp(static_cast<int>(u1 * hizReadW), 0, hizReadW - 1);
-    int py0 = std::clamp(static_cast<int>(v0 * hizReadH), 0, hizReadH - 1);
-    int py1 = std::clamp(static_cast<int>(v1 * hizReadH), 0, hizReadH - 1);
+    int px0 = std::clamp(static_cast<int>(u0 * hizReadW_), 0, hizReadW_ - 1);
+    int px1 = std::clamp(static_cast<int>(u1 * hizReadW_), 0, hizReadW_ - 1);
+    int py0 = std::clamp(static_cast<int>(v0 * hizReadH_), 0, hizReadH_ - 1);
+    int py1 = std::clamp(static_cast<int>(v1 * hizReadH_), 0, hizReadH_ - 1);
 
     // Farthest known depth across every readback texel the tile's screen
     // footprint touches — the conservative (MAX) value the whole region
@@ -227,7 +227,7 @@ bool HiZ::isOccluded(const glm::vec3& lo, const glm::vec3& hi, const glm::mat4& 
     float farthestKnown = 0.0f;
     for (int py = py0; py <= py1; ++py) {
         for (int px = px0; px <= px1; ++px) {
-            farthestKnown = std::max(farthestKnown, hizReadback[static_cast<size_t>(py) * hizReadW + px]);
+            farthestKnown = std::max(farthestKnown, hizReadback_[static_cast<size_t>(py) * hizReadW_ + px]);
         }
     }
 
@@ -255,12 +255,12 @@ bool aabbOutsideFrustum(const glm::vec3& lo, const glm::vec3& hi, const glm::mat
 }
 
 void HiZ::destroy() {
-    if (hizCopyProgram) { glDeleteProgram(hizCopyProgram); hizCopyProgram = 0; }
-    if (hizDownsampleProgram) { glDeleteProgram(hizDownsampleProgram); hizDownsampleProgram = 0; }
-    if (hizFullscreenVAO) { glDeleteVertexArrays(1, &hizFullscreenVAO); hizFullscreenVAO = 0; }
-    if (hizFBO) { glDeleteFramebuffers(1, &hizFBO); hizFBO = 0; }
-    if (hizDepthCaptureTex) { glDeleteTextures(1, &hizDepthCaptureTex); hizDepthCaptureTex = 0; }
-    if (hizPyramidTex) { glDeleteTextures(1, &hizPyramidTex); hizPyramidTex = 0; }
-    hizReady = false;
+    if (hizCopyProgram_) { glDeleteProgram(hizCopyProgram_); hizCopyProgram_ = 0; }
+    if (hizDownsampleProgram_) { glDeleteProgram(hizDownsampleProgram_); hizDownsampleProgram_ = 0; }
+    if (hizFullscreenVAO_) { glDeleteVertexArrays(1, &hizFullscreenVAO_); hizFullscreenVAO_ = 0; }
+    if (hizFBO_) { glDeleteFramebuffers(1, &hizFBO_); hizFBO_ = 0; }
+    if (hizDepthCaptureTex_) { glDeleteTextures(1, &hizDepthCaptureTex_); hizDepthCaptureTex_ = 0; }
+    if (hizPyramidTex_) { glDeleteTextures(1, &hizPyramidTex_); hizPyramidTex_ = 0; }
+    hizReady_ = false;
 }
 

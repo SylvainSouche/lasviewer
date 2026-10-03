@@ -191,7 +191,7 @@ TEST(test_near_far_from_bbox) {
 // t=0 → blue, t=0.25 → green, t=0.5 → yellow, t=0.75 → red, t=1 → red
 // ---------------------------------------------------------------------------
 TEST(test_elevation_colors) {
-    static const float stops[5][3] = {
+    static const float kStops[5][3] = {
         {0.1f, 0.2f, 0.8f},  // blue
         {0.2f, 0.7f, 0.9f},  // cyan
         {0.3f, 0.8f, 0.3f},  // green
@@ -202,8 +202,8 @@ TEST(test_elevation_colors) {
         t = std::max(0.0f, std::min(1.0f, t));
         float s = t * 4.0f;
         int i = static_cast<int>(s);
-        if (i >= 4) return stops[4];
-        return stops[i];  // simplified — real code interpolates
+        if (i >= 4) return kStops[4];
+        return kStops[i];  // simplified — real code interpolates
     };
 
     // t=0 → blue (high B, low R)

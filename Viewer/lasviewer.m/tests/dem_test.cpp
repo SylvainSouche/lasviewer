@@ -24,7 +24,7 @@ struct Raster {
     std::vector<float> elev;
     std::vector<uint8_t> nodata;
     template <typename F>
-    Raster(int w_, int h_, F f) : w(w_), h(h_), elev(static_cast<size_t>(w_) * h_), nodata(elev.size(), 0) {
+    Raster(int width, int height, F f) : w(width), h(height), elev(static_cast<size_t>(width) * height), nodata(elev.size(), 0) {
         for (int r = 0; r < h; ++r)
             for (int c = 0; c < w; ++c) elev[static_cast<size_t>(r) * w + c] = static_cast<float>(f(c, r));
     }

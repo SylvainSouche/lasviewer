@@ -31,14 +31,14 @@
 
 static glm::vec3 elevationColorRamp(float t) {
     t = glm::clamp(t, 0.0f, 1.0f);
-    static const glm::vec3 stops[5] = {
+    static const glm::vec3 kStops[5] = {
         {0.1f, 0.2f, 0.8f}, {0.2f, 0.7f, 0.9f}, {0.3f, 0.8f, 0.3f},
         {0.95f, 0.85f, 0.2f}, {0.85f, 0.25f, 0.2f}
     };
     float s = t * 4.0f;
     int si = static_cast<int>(s);
-    if (si >= 4) return stops[4];
-    return glm::mix(stops[si], stops[si + 1], s - si);
+    if (si >= 4) return kStops[4];
+    return glm::mix(kStops[si], kStops[si + 1], s - si);
 }
 
 // ===========================================================================
@@ -198,11 +198,11 @@ void TileGrid::requestLoad(int tileIndex, double resolution) {
 // init / stop
 // ===========================================================================
 
-void TileGrid::init(const std::string& copcPath_, const WorldBounds& bounds,
-                    const Orthophoto* ortho, const SceneFrame& frame_) {
+void TileGrid::init(const std::string& path, const WorldBounds& bounds,
+                    const Orthophoto* ortho, const SceneFrame& sceneFrame) {
     orthoPtr = ortho;
-    copcPath = copcPath_;
-    frame = frame_;
+    copcPath = path;
+    frame = sceneFrame;
     fileMaxX = bounds.max.x;
     fileMaxY = bounds.max.y;
     useOrthoColors = ortho && ortho->hasGeo;
@@ -305,13 +305,13 @@ static void computeTilePCA(Tile& t, const std::vector<float>& pos) {
         if (maxOff < 1e-10f) break;
 
         float theta = (cov[q][q] - cov[p][p]) / (2.0f * cov[p][q]);
-        float t_ = (theta >= 0 ? 1.0f : -1.0f) /
+        float tanTheta = (theta >= 0 ? 1.0f : -1.0f) /
                    (std::abs(theta) + std::sqrt(theta * theta + 1.0f));
-        float c = 1.0f / std::sqrt(t_ * t_ + 1.0f);
-        float s = t_ * c;
+        float c = 1.0f / std::sqrt(tanTheta * tanTheta + 1.0f);
+        float s = tanTheta * c;
 
-        float newPP = cov[p][p] - t_ * cov[p][q];
-        float newQQ = cov[q][q] + t_ * cov[p][q];
+        float newPP = cov[p][p] - tanTheta * cov[p][q];
+        float newQQ = cov[q][q] + tanTheta * cov[p][q];
         cov[p][p] = newPP;
         cov[q][q] = newQQ;
         cov[p][q] = cov[q][p] = 0.0f;

@@ -28,7 +28,7 @@
 static glm::vec3 elevationColor(double z, double zMin, double zRange) {
     double t = (z - zMin) / zRange;
     t = glm::clamp(t, 0.0, 1.0);
-    static const glm::vec3 stops[5] = {
+    static const glm::vec3 kStops[5] = {
         {0.1f, 0.2f, 0.8f},  // blue
         {0.2f, 0.7f, 0.9f},  // cyan
         {0.3f, 0.8f, 0.3f},  // green
@@ -37,9 +37,9 @@ static glm::vec3 elevationColor(double z, double zMin, double zRange) {
     };
     float s = static_cast<float>(t) * 4.0f;
     int i = static_cast<int>(s);
-    if (i >= 4) return stops[4];
+    if (i >= 4) return kStops[4];
     float f = s - i;
-    return glm::mix(stops[i], stops[i + 1], f);
+    return glm::mix(kStops[i], kStops[i + 1], f);
 }
 
 // ---------------------------------------------------------------------------

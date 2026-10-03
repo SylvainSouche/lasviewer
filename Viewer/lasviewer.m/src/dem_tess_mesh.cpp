@@ -36,8 +36,8 @@
 #  define LASVIEWER_HAS_OPENMP 0
 #endif
 
-// Adaptive quadtree parameters. Patch count = COARSE * 2^maxLevel
-// per axis; a level-L leaf's world size is (initial COARSE cell) / 2^L.
+// Adaptive quadtree parameters. Patch count = kCoarse * 2^maxLevel
+// per axis; a level-L leaf's world size is (initial kCoarse cell) / 2^L.
 //
 // maxLevel is a runtime, per-instance member (DemLayer: F/S keys, UI) —
 // see DEMTessMesh::maxLevel in dem_tess_mesh.h — rather than a fixed
@@ -50,14 +50,14 @@
 // substantial elevation variation entirely inside itself, contributing to
 // reported displacement overhangs (since fixed more directly — see
 // shaders.cpp's TES history). Walked back to 5 as a middle ground before
-// being made directly user-adjustable here. COARSE (the initial grid
+// being made directly user-adjustable here. kCoarse (the initial grid
 // before any adaptive subdivision) stays a fixed constant — only the
 // depth ceiling was requested as a live control.
-static const int COARSE = 8;
+static const int kCoarse = 8;
 // GPU tessellation splits a patch edge into at most this many segments
 // (GL's guaranteed minimum gl_MaxTessGenLevel), so a patch spans at most
 // this many DEM pixels: every pixel stays reachable.
-static const double MAX_TESS_SEGMENTS = 64.0;
+static const double kMaxTessSegments = 64.0;
 
 // NOTE: the actual fixed tessellation level used for constrained (LOD-
 // transition) edges lives in the shader as CONSTRAINED_EDGE_TESS_LEVEL
@@ -84,7 +84,7 @@ static const double MAX_TESS_SEGMENTS = 64.0;
 // limits. Raise further (with or without switching to R16F) if you have
 // VRAM headroom and are still hitting this limit; lower it if 151MB is too
 // much for your GPU.
-static const int MAX_HEIGHTMAP_TEXELS = 6144 * 6144;
+static const int kMaxHeightmapTexels = 6144 * 6144;
 
 // ---------------------------------------------------------------------------
 // demTessSupported — query the current GL context version. Must be called
@@ -114,10 +114,10 @@ bool demTessSupported() {
 // full-resolution heightmap (in GL-space Y) for uploadGPU() to texture.
 // ---------------------------------------------------------------------------
 bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
-                              const SceneFrame& frame_, double angleThresholdDeg,
+                              const SceneFrame& sceneFrame, double angleThresholdDeg,
                               int maxLevelParam,
                               const std::atomic<bool>* cancelFlag) {
-    frame = frame_;
+    frame = sceneFrame;
     collapseAngleDeg = angleThresholdDeg;
     maxLevel = maxLevelParam;
     orthoUsable = true; // reset each load — this object can be reloaded with
@@ -250,12 +250,12 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
     std::vector<float> filled(elevs);
     fillNodataNearest(filled, nodataMask, static_cast<int>(w), static_cast<int>(h));
     const DemGrid grid{filled.data(), nodataMask.data(), static_cast<int>(w), static_cast<int>(h)};
-    const double cw0 = static_cast<double>(w - 1) / COARSE;
-    const double ch0 = static_cast<double>(h - 1) / COARSE;
+    const double cw0 = static_cast<double>(w - 1) / kCoarse;
+    const double ch0 = static_cast<double>(h - 1) / kCoarse;
 
     std::vector<QuadCell> leaves =
-        buildLeaves(grid, COARSE, maxLevel, collapseAngleDeg, std::abs(geo.A), std::abs(geo.E),
-                    MAX_TESS_SEGMENTS, cancelFlag);
+        buildLeaves(grid, kCoarse, maxLevel, collapseAngleDeg, std::abs(geo.A), std::abs(geo.E),
+                    kMaxTessSegments, cancelFlag);
     if (cancelFlag && cancelFlag->load(std::memory_order_relaxed)) return false;
     auto logHistogram = [&](const char* what) {
         std::vector<int> counts(maxLevel + 1, 0);
@@ -267,7 +267,7 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
     };
     logHistogram("subdivided");
 
-    int passes = balanceLeaves(leaves, COARSE, maxLevel, cw0, ch0);
+    int passes = balanceLeaves(leaves, kCoarse, maxLevel, cw0, ch0);
     // Balancing can split a cell into children lying over nodata: drop those
     // (same rule as the subdivision: no centre data, no patch).
     leaves.erase(std::remove_if(leaves.begin(), leaves.end(),
@@ -308,7 +308,7 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
         patchHeightUVs.push_back(hu); patchHeightUVs.push_back(hv);
     };
 
-    const LeafIndex index(leaves, COARSE, maxLevel);
+    const LeafIndex index(leaves, kCoarse, maxLevel);
     for (const QuadCell& c : leaves) {
         float codes[4];
         edgeCodes(c, index, maxLevel, codes);
@@ -451,16 +451,16 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
 
     glBindVertexArray(0);
 
-    // --- Heightmap texture, capped at MAX_HEIGHTMAP_TEXELS.
+    // --- Heightmap texture, capped at kMaxHeightmapTexels.
     if (!uploadHeightmapTexture(heightmapGLSpace, heightmapValid, heightmapSrcW, heightmapSrcH,
-                                MAX_HEIGHTMAP_TEXELS)) {
+                                kMaxHeightmapTexels)) {
         return false;
     }
 
     if (auxTex) { glDeleteTextures(1, &auxTex); auxTex = 0; }
     if (!auxData.empty()) {
         int aw = heightmapSrcW, ah = heightmapSrcH;
-        std::vector<float> small = boxDownsample(auxData, aw, ah, MAX_HEIGHTMAP_TEXELS);
+        std::vector<float> small = boxDownsample(auxData, aw, ah, kMaxHeightmapTexels);
         glGenTextures(1, &auxTex);
         glBindTexture(GL_TEXTURE_2D, auxTex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, aw, ah, 0, GL_RED, GL_FLOAT,
@@ -658,13 +658,13 @@ void DEMTessMesh::destroy() {
 DEMTessMesh::~DEMTessMesh() {
     // The build thread captures `this`: wait for it. GL resources are freed
     // by destroy() (the owner calls it with a current context).
-    if (bgThread.joinable()) bgThread.join();
+    if (bgThread_.joinable()) bgThread_.join();
 }
 
 void DEMTessMesh::requestBackgroundBuild(const DemSource& source, const Orthophoto* ortho,
-                                         const SceneFrame& frame_, double angleThresholdDeg,
+                                         const SceneFrame& sceneFrame, double angleThresholdDeg,
                                          int maxLevelParam) {
-    if (bgInProgress.load()) {
+    if (bgInProgress_.load()) {
         // The currently running build is now obsolete — it's about to be
         // replaced by this request — so signal it to abort rather than
         // let it run to completion just to be discarded (an earlier
@@ -675,8 +675,8 @@ void DEMTessMesh::requestBackgroundBuild(const DemSource& source, const Orthopho
         // bottom-up collapse (dem_tess_mesh.cpp) checks this flag
         // periodically and stops early; see its own comment for why that
         // unwinds quickly rather than instantly.
-        if (bgCancelFlag) {
-            bgCancelFlag->store(true, std::memory_order_relaxed);
+        if (bgCancelFlag_) {
+            bgCancelFlag_->store(true, std::memory_order_relaxed);
         }
         // Coalesce: remember these as the latest-requested params. The
         // actual new thread starts once the (now aborting) old one has
@@ -685,45 +685,45 @@ void DEMTessMesh::requestBackgroundBuild(const DemSource& source, const Orthopho
         // old one would defeat "at most one background thread alive at a
         // time" for no benefit, since the old one is aborting quickly
         // anyway.
-        bgHasPendingRequest = true;
-        bgPendingSource = source;
-        bgPendingOrtho = ortho;
-        bgPendingFrame = frame_;
-        bgPendingAngle = angleThresholdDeg;
-        bgPendingMaxLevel = maxLevelParam;
+        bgHasPendingRequest_ = true;
+        bgPendingSource_ = source;
+        bgPendingOrtho_ = ortho;
+        bgPendingFrame_ = sceneFrame;
+        bgPendingAngle_ = angleThresholdDeg;
+        bgPendingMaxLevel_ = maxLevelParam;
         return;
     }
-    startBackgroundBuildNow(source, ortho, frame_, angleThresholdDeg, maxLevelParam);
+    startBackgroundBuildNow(source, ortho, sceneFrame, angleThresholdDeg, maxLevelParam);
 }
 
 void DEMTessMesh::startBackgroundBuildNow(const DemSource& source, const Orthophoto* ortho,
-                                          const SceneFrame& frame_, double angleThresholdDeg,
+                                          const SceneFrame& sceneFrame, double angleThresholdDeg,
                                           int maxLevelParam) {
     // The only thread that could possibly be joinable here has already
-    // finished (we only reach this point when bgInProgress is false,
+    // finished (we only reach this point when bgInProgress_ is false,
     // which the background thread itself sets — as the very last thing it
     // does, right before returning — see the lambda below), so this join
     // is near-instant, not a real block.
-    if (bgThread.joinable()) bgThread.join();
+    if (bgThread_.joinable()) bgThread_.join();
 
     // A fresh flag per build, owned via shared_ptr so reassigning
-    // `bgCancelFlag` for a LATER build never affects an EARLIER build's
+    // `bgCancelFlag_` for a LATER build never affects an EARLIER build's
     // thread, which keeps its own captured copy alive independently (see
     // the member's comment in dem_tess_mesh.h).
-    bgCancelFlag = std::make_shared<std::atomic<bool>>(false);
-    auto cancelFlag = bgCancelFlag;
+    bgCancelFlag_ = std::make_shared<std::atomic<bool>>(false);
+    auto cancelFlag = bgCancelFlag_;
 
-    bgInProgress = true;
+    bgInProgress_ = true;
     std::cerr << "[dem-tess] background rebuild START (angle="
               << angleThresholdDeg << "\u00b0, maxLevel=" << maxLevelParam
               << ")" << std::endl;
-    bgThread = std::thread([this, source, ortho, frame_, angleThresholdDeg, maxLevelParam, cancelFlag]() {
+    bgThread_ = std::thread([this, source, ortho, sceneFrame, angleThresholdDeg, maxLevelParam, cancelFlag]() {
         // Builds an entirely separate, temporary instance — reuses
         // loadFromDEM() completely unchanged. This touches no GL state and
         // no member of `this`, so it's safe to run concurrently with the
         // main thread rendering `this`'s CURRENT (old) data.
         auto tmp = std::make_unique<DEMTessMesh>();
-        bool ok = tmp->loadFromDEM(source, ortho, frame_, angleThresholdDeg, maxLevelParam,
+        bool ok = tmp->loadFromDEM(source, ortho, sceneFrame, angleThresholdDeg, maxLevelParam,
                                    cancelFlag.get());
         bool wasCancelled = cancelFlag->load(std::memory_order_relaxed);
         if (wasCancelled) {
@@ -733,24 +733,24 @@ void DEMTessMesh::startBackgroundBuildNow(const DemSource& source, const Orthoph
             std::cerr << "[dem-tess] background rebuild FINISHED ("
                       << tmp->patchCount << " patches, not yet swapped in)"
                       << std::endl;
-            std::lock_guard<std::mutex> lk(bgMutex);
-            bgPending = std::move(tmp);
-            bgHasResult = true;
+            std::lock_guard<std::mutex> lk(bgMutex_);
+            bgPending_ = std::move(tmp);
+            bgHasResult_ = true;
         } else {
             std::cerr << "[dem-tess] background rebuild FAILED" << std::endl;
         }
-        bgInProgress = false;
+        bgInProgress_ = false;
     });
 }
 
 bool DEMTessMesh::pollBackgroundBuild(const Orthophoto* ortho) {
     bool swapped = false;
-    if (bgHasResult.load()) {
+    if (bgHasResult_.load()) {
         std::unique_ptr<DEMTessMesh> pending;
         {
-            std::lock_guard<std::mutex> lk(bgMutex);
-            pending = std::move(bgPending);
-            bgHasResult = false;
+            std::lock_guard<std::mutex> lk(bgMutex_);
+            pending = std::move(bgPending_);
+            bgHasResult_ = false;
         }
         if (pending && pending->loaded) {
             // Move the CPU-side build results from the temporary instance
@@ -787,12 +787,12 @@ bool DEMTessMesh::pollBackgroundBuild(const Orthophoto* ortho) {
         }
     }
     // If a newer request came in while we were building, start it now
-    // that the previous build has finished (bgInProgress went false
+    // that the previous build has finished (bgInProgress_ went false
     // inside the background thread, right before it exited).
-    if (!bgInProgress.load() && bgHasPendingRequest) {
-        bgHasPendingRequest = false;
-        startBackgroundBuildNow(bgPendingSource, bgPendingOrtho, bgPendingFrame, bgPendingAngle,
-                                bgPendingMaxLevel);
+    if (!bgInProgress_.load() && bgHasPendingRequest_) {
+        bgHasPendingRequest_ = false;
+        startBackgroundBuildNow(bgPendingSource_, bgPendingOrtho_, bgPendingFrame_, bgPendingAngle_,
+                                bgPendingMaxLevel_);
     }
     return swapped;
 }

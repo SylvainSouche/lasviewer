@@ -152,7 +152,7 @@ struct DEMTessMesh {
                                 const SceneFrame& frame, double angleThresholdDeg,
                                 int maxLevelParam);
     bool pollBackgroundBuild(const Orthophoto* ortho);
-    bool backgroundBuildInProgress() const { return bgInProgress.load(); }
+    bool backgroundBuildInProgress() const { return bgInProgress_.load(); }
 
     ~DEMTessMesh();
 
@@ -161,19 +161,19 @@ private:
                                  const SceneFrame& frame, double angleThresholdDeg,
                                  int maxLevelParam);
 
-    std::thread bgThread;
-    std::mutex bgMutex;
-    std::atomic<bool> bgInProgress{false};
-    std::atomic<bool> bgHasResult{false};
-    std::unique_ptr<DEMTessMesh> bgPending; // guarded by bgMutex
+    std::thread bgThread_;
+    std::mutex bgMutex_;
+    std::atomic<bool> bgInProgress_{false};
+    std::atomic<bool> bgHasResult_{false};
+    std::unique_ptr<DEMTessMesh> bgPending_; // guarded by bgMutex_
     // One flag per build (shared with its thread), so replacing it for a new
     // build doesn't un-cancel the old one.
-    std::shared_ptr<std::atomic<bool>> bgCancelFlag;
+    std::shared_ptr<std::atomic<bool>> bgCancelFlag_;
 
-    bool bgHasPendingRequest = false;
-    DemSource bgPendingSource;
-    const Orthophoto* bgPendingOrtho = nullptr;
-    SceneFrame bgPendingFrame;
-    double bgPendingAngle = 1.0;
-    int bgPendingMaxLevel = 5;
+    bool bgHasPendingRequest_ = false;
+    DemSource bgPendingSource_;
+    const Orthophoto* bgPendingOrtho_ = nullptr;
+    SceneFrame bgPendingFrame_;
+    double bgPendingAngle_ = 1.0;
+    int bgPendingMaxLevel_ = 5;
 };
