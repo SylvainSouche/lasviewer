@@ -410,21 +410,23 @@ Output: `build/<os>-<arch>/bin/lasviewer` at the workspace root (e.g. `build/mac
 Per-target settings are bmake-it `mk/` hook files next to the module: `Viewer/lasviewer.m/mk/local.macos.mk` (OpenGL, Cocoa and IOKit frameworks) and `local.linux.mk` (`-lGL`).
 
 ### 12.2c
-**bmake-it restrictions and how lasviewer works around them.** Checked against bmake-it `main` at 943b3b2 (2026-10-03), on macOS and, for the first time, Linux (Ubuntu 24.04, in CI). For each one: what goes wrong, why, the workaround and what it costs, and how to check that a fix makes it removable. Removing a workaround is the acceptance test: delete it, then build from a clean tree (`bmake clean`, or delete every `build/` and `work/`), since an incremental build can hide a regression (see "ImGui's include path" in the resolved list).
+**bmake-it restrictions and how lasviewer works around them.** Checked against bmake-it `main` at 87048cd (2026-10-03), on macOS and Linux (Ubuntu 24.04, in CI). For each one: what goes wrong, why, the workaround and what it costs, and how to check that a fix makes it removable. Removing a workaround is the acceptance test: delete it, then build from a clean tree (`bmake clean`, or delete every `build/` and `work/`), since an incremental build can hide a regression (see "ImGui's include path" in the resolved list).
 
-**Workarounds in place** (Linux only, in `scripts/ci.sh build`; none on macOS):
-1. **Fetched CMake builds fail on Linux:** `/bin/sh: Syntax error: ")" unexpected` (laz-perf, copc-lib). bmake-it's non-macOS `_FETCH_DEPLOY_EXPORT` is `:` where the macOS one is `export MACOSX_DEPLOYMENT_TARGET=…;` — the `;` is missing, so the next `case` becomes an argument of `:`. Workaround: `bmake "_FETCH_DEPLOY_EXPORT=:;"`. Every `FETCH_BUILD=` module is affected on any non-macOS host.
-2. **Imports with headers in `/usr/include` get no include directory:** `IMPORT_HEADERS=glm: not found under any resolved include dir ()` (glm, GLFW). `pkg-config --cflags` prints nothing for the system include directory, and bmake-it reads only that; `pkg-config --variable=includedir` gives `/usr/include`. Workaround: `GLM_CFLAGS=-I/usr/include`.
-3. **Staging a versioned shared library made of symlinks loops it:** with GLFW given as a prefix of symlinks, the staged `libglfw.so.3.3` pointed to itself. Workaround (together with 2): `GLFW_PREFIX=` a prefix holding real copies of the GLFW headers and `libglfw.so`.
-With 1–3, a clean Linux build links (GDAL, laz-perf, GLFW, Mesa `libGL`) and all tests pass. Remove them from `ci.sh` when bmake-it is fixed, and check from a clean tree.
+**Workarounds in place:** none, on macOS or Linux.
 
 **Restrictions not worked around**
-- *`bmake test` doesn't rebuild the module's library or the test programs' dependencies:* after changing `point_cloud.cpp`, `bmake test` ran the tests against the old `libgeo.a` (a test meant to fail on the old code passed). Run `bmake` before `bmake test`; CI does.
-- *Hidden files are compiled:* bmake-it's source discovery took macOS AppleDouble files (`._raster.cpp`) as sources when the tree was copied with macOS `tar`. Harmless with git checkouts.
-- *The first rebuild after a clean build re-ran laz-perf's CMake configure once:* fixed in bmake-it 266f3b7 (in 943b3b2).
+- *From a clean tree, `bmake test` alone fails at the workspace:* each tested module now builds itself first (`test` depends on `all`), but the frameworks without tests (GIS, GUI) are never built, so Geo and Viewer compile without glm's and GLFW's staged headers (`'glm/glm.hpp' file not found`). Run `bmake` before `bmake test` on a clean tree (`scripts/ci.sh build` does); after that, `bmake test` alone is enough, library changes included.
 - *Fetched upstream builds can't be cross-compiled* (`FETCH_BUILD=cmake` drops cross flags). Cross-compiling is out of scope for lasviewer for now.
 
 **Resolved in bmake-it, workarounds removed**
+- *In 87048cd (round 6, first Linux build):*
+  - fetched CMake builds failed on every non-macOS host (`/bin/sh: Syntax error: ")" unexpected`: a `;` was missing after the non-macOS deployment-target prologue); `ci.sh` passed `_FETCH_DEPLOY_EXPORT=:;`;
+  - imports whose headers are in `/usr/include` had no include directory to stage from (`pkg-config --cflags` omits it); `ci.sh` passed `GLM_CFLAGS=-I/usr/include`;
+  - staging a versioned shared library made of symlinks linked its real name to itself; `ci.sh` gave GLFW as a prefix of copied files;
+  - `bmake test` ran the tests against the previous library (a test written to fail on the old `point_cloud.cpp` passed); it now rebuilds the module first;
+  - hidden files (macOS `._x.cpp` sidecars) were compiled as sources;
+  - a legitimately rebuilt program printed `copy-up collision` warnings.
+- *In 943b3b2:* the first rebuild after a clean build no longer re-runs laz-perf's CMake configure.
 - *In c4d7295 (round 5):*
   - `REQUIRES=header:` also looks under the tool prefixes the import probe uses, so `REQUIRES=header:glm/glm.hpp` passes with MacPorts clang (which doesn't search `/opt/local/include`); `GIS/libglm.m` declares it.
   - A failed framework stops the ones that depend on it: a forced GIS failure now reports `framework Geo skipped: prerequisite GIS failed` and `Viewer … (root cause: GIS)` instead of burying the real error under `glm.hpp not found`.
@@ -454,7 +456,7 @@ With 1–3, a clean Linux build links (GDAL, laz-perf, GLFW, Mesa `libGL`) and a
 **Prerequisites versus fetched modules.** A dependency that can be downloaded from one single source (a release archive) for every supported platform is a fetched module, built by bmake-it. Anything else is a **prerequisite**, installed with the platform's own package manager before building, all from one source (no mixing of package managers). Today: GDAL, GLFW, glm and the OpenMP runtime are prerequisites; laz-perf, copc-lib and Dear ImGui are fetched. README → Prerequisites lists the package names per platform. Modules declare what they check with `REQUIRES=` (bmake-it: `pkg-config --exists`, else `command -v`): `gdal` and `glfw3` on their import modules, `cmake` on the two CMake-built ones. glm, header-only, is declared with `REQUIRES=header:glm/glm.hpp`.
 
 ### 12.3
-`bmake test` builds and runs the atf-c++ tests with Kyua: `Geo/libgeo.m/tests/{raster_test,las_test,height_model_test}.cpp` (linked against `libgeo.a`) and `Viewer/lasviewer.m/tests/{basic_test,scene_test,dem_test,cli_test,copc_test}.cpp` (linked against the viewer's objects except `main.o`). Run `bmake` first (§12.2c). JUnit results go to `build/<key>/runs/<run>/test-results.xml` in each module; `REPORT=yes` adds a Kyua HTML report. `SANITIZE=address` builds everything with AddressSanitizer (the tests and a MNT + MNH + COPC scene ran clean with it on 2026-09-30).
+`bmake test` builds and runs the atf-c++ tests with Kyua: `Geo/libgeo.m/tests/{raster_test,las_test,height_model_test}.cpp` (linked against `libgeo.a`) and `Viewer/lasviewer.m/tests/{basic_test,scene_test,dem_test,cli_test,copc_test}.cpp` (linked against the viewer's objects except `main.o`). On a clean tree run `bmake` first (§12.2c); afterwards `bmake test` rebuilds what changed. JUnit results go to `build/<key>/runs/<run>/test-results.xml` in each module; `REPORT=yes` adds a Kyua HTML report. `SANITIZE=address` builds everything with AddressSanitizer (the tests and a MNT + MNH + COPC scene ran clean with it on 2026-09-30).
 
 ### 12.4
 **Naming, enforced** (`.clang-tidy`, `readability-identifier-naming` only, as errors): types, template parameters and enum values `CamelCase`; functions, methods, variables, parameters and members `camelBack`; private and protected members `camelBack_`; constants (`constexpr`, global/static `const`) `kCamelCase`; namespaces `lower_case`; macros `UPPER_CASE`; one or two capitals allowed as math notation (`A`…`F`, `V`, `P`, `VP`, `W`, `H`, `L`, `K`); atf-c++ test case names keep snake_case. Checked on the project's sources and headers (`Geo/include`, `Viewer/local/include`), not on staged third-party headers.
@@ -463,7 +465,7 @@ With 1–3, a clean Linux build links (GDAL, laz-perf, GLFW, Mesa `libGL`) and a
 **Formatting, enforced** (`.clang-format`): LLVM base, C++17, 100 columns, 4-space indent, attached braces, left pointers, one-line `if`/loops allowed, no alignment of consecutive assignments, includes grouped as project / third-party libraries / standard library. `bmake lint` (`scripts/lint.sh`) checks both 12.4 and 12.5 and fails on any deviation; `bmake lint-fix` applies them. Both tools are pinned to version 22 (CI installs 22.1.8 from PyPI): other versions may format slightly differently.
 
 ### 12.5b
-**CI** (`.github/workflows/ci.yml`): on every push to `main` and every pull request, on Ubuntu 24.04: prerequisites from apt, then bmake-it at a pinned commit, `bmake`, `bmake test`, `bmake lint` — the steps of `scripts/ci.sh deps|build|lint`, which reproduce it on any Debian/Ubuntu machine or container. The tests don't draw, so no GPU is needed. Test results (JUnit XML and logs) are kept as a workflow artifact.
+**CI** (`.github/workflows/ci.yml`): on every push to `main` and every pull request, on Ubuntu 24.04: prerequisites from apt, then bmake-it at a pinned commit (87048cd), `bmake`, `bmake test`, `bmake lint`, with no workaround — the steps of `scripts/ci.sh deps|build|lint`, which reproduce it on any Debian/Ubuntu machine or container. The tests don't draw, so no GPU is needed. Test results (JUnit XML and logs) are kept as a workflow artifact.
 
 ### 12.6
 `bmake docs` generates Doxygen HTML from `Geo`'s public `include/` (`Geo/docs/html/`, git-ignored) and a workspace page in `build/docs/index.html`. `GIS`, `GUI` (imported headers only) and `Viewer` (framework-local headers only) set `DOCS=no`.

@@ -11,7 +11,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-BMAKE_IT_REF=${BMAKE_IT_REF:-943b3b2}
+BMAKE_IT_REF=${BMAKE_IT_REF:-87048cd}
 WORK=${WORK:-$PWD/.ci}
 
 case "${1:-}" in
@@ -33,27 +33,11 @@ build)
     git -C "$WORK/bmake-it" fetch -q origin
     git -C "$WORK/bmake-it" checkout -q "$BMAKE_IT_REF"
     export MAKESYSPATH="$WORK/bmake-it/mk:/usr/share/mk"
-    if [ "$(uname -s)" = Linux ]; then
-        # Workarounds for bmake-it 943b3b2 on Linux, to remove once it is
-        # fixed (specs.md §12.2c):
-        # - its non-macOS FETCH_BUILD prologue lacks a ";" before the next
-        #   command (laz-perf, copc-lib fail with a dash syntax error);
-        # - an import whose headers are in /usr/include gets no include
-        #   directory from `pkg-config --cflags` (glm, GLFW not staged);
-        # - staging a versioned .so whose files are symlinks loops them, so
-        #   GLFW is given as a prefix holding real copies.
-        glfwPrefix="$WORK/glfw-prefix"
-        rm -rf "$glfwPrefix"
-        mkdir -p "$glfwPrefix/include" "$glfwPrefix/lib"
-        cp -R /usr/include/GLFW "$glfwPrefix/include/"
-        cp -L "$(pkg-config --variable=libdir glfw3)/libglfw.so" "$glfwPrefix/lib/"
-        export GLFW_PREFIX="$glfwPrefix" GLM_CFLAGS=-I/usr/include
-        set -- "_FETCH_DEPLOY_EXPORT=:;"
-    else
-        set --
-    fi
-    bmake "$@"
-    bmake test "$@"
+    # `bmake test` builds each tested module first, but from a clean tree
+    # not the frameworks without tests (GIS, GUI) that the others need:
+    # build everything first (specs.md §12.2c).
+    bmake
+    bmake test
     ;;
 lint)
     if [ ! -x "$WORK/venv/bin/clang-format" ]; then
