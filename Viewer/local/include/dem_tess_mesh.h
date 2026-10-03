@@ -91,6 +91,19 @@ struct DEMTessMesh {
     int heightmapTexW = 0, heightmapTexH = 0; // uploaded size (after any downsample)
     double demPixelW = 1.0, demPixelH = 1.0;  // world size of one DEM pixel
 
+    // CPU copy of the DEM's elevations (nodata filled, mask kept), for
+    // queries such as the Walk navigation mode's ground height. Shared so
+    // that a background rebuild can swap it in cheaply.
+    struct GroundSampler {
+        double C = 0, F = 0, A = 1, E = -1; // pixel-centre affine (north-up)
+        int w = 0, h = 0;
+        std::vector<float> elev; // nodata filled with the nearest valid value
+        std::vector<uint8_t> nodata;
+        // Elevation (bilinear) at world (x, y); false outside the DEM or on nodata.
+        bool at(double x, double y, double& z) const;
+    };
+    std::shared_ptr<const GroundSampler> ground;
+
     SceneFrame frame;
     glm::dvec3 bboxMin{0.0}, bboxMax{0.0};
     glm::vec2 glBBoxMin{0.0f}, glBBoxMax{0.0f};

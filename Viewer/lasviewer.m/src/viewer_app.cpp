@@ -2,6 +2,7 @@
 // The ImGui panels live in viewer_ui.cpp.
 #include "viewer_app.h"
 
+#include "dem_layer.h"
 #include "dem_tess_mesh.h"
 #include "shaders.h"
 
@@ -192,6 +193,8 @@ bool ViewerApp::init(const LoadPlan& plan) {
         std::cerr << "ERROR: nothing could be loaded" << std::endl;
         return false;
     }
+    controller_.setFrame(scene_.frame);
+    groundFn_ = [this](double x, double y, double& z) { return groundAt(x, y, z); };
     resetView();
     if (initialView_) {
         glm::vec3 t = scene_.frame.toGL(viewTarget_.x, viewTarget_.y, viewTarget_.z);
@@ -201,7 +204,57 @@ bool ViewerApp::init(const LoadPlan& plan) {
         camera_.yaw = static_cast<float>(glm::radians(viewYawDeg_));
         camera_.pitch = static_cast<float>(glm::radians(viewPitchDeg_));
     }
+    if (initialNav_ != NavMode::Orbit) setNavMode(initialNav_);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Navigation modes
+// ---------------------------------------------------------------------------
+
+bool ViewerApp::groundAt(double x, double y, double& z) const {
+    // The terrain: visible DEMs that aren't above-ground layers (DHM/DSM).
+    for (const auto& l : scene_.layers) {
+        const auto* dem = dynamic_cast<const DemLayer*>(l.get());
+        if (dem && l->visible && dem->role() != DemRole::AboveGround && dem->groundAt(x, y, z))
+            return true;
+    }
+    return false;
+}
+
+void ViewerApp::setNavMode(NavMode mode) {
+    controller_.setMode(mode, settings_.zScale, groundFn_);
+    lastNavInput_ = glfwGetTime();
+    static const char* kNames[] = {"orbit", "fly", "walk"};
+    std::cerr << "[nav] " << kNames[static_cast<int>(mode)] << " mode" << std::endl;
+}
+
+// Fly and Walk read the keys and the cursor every frame (smooth, frame-rate
+// independent movement) instead of reacting to key-repeat events.
+NavInput ViewerApp::sampleNavInput() {
+    NavInput in;
+    if (!snapshotPath_.empty() || controller_.mode() == NavMode::Orbit) return in;
+    if (!ImGui::GetIO().WantCaptureKeyboard) {
+        auto down = [&](int k) { return glfwGetKey(window_, k) == GLFW_PRESS; };
+        in.forward = down(GLFW_KEY_UP);
+        in.back = down(GLFW_KEY_DOWN);
+        in.left = down(GLFW_KEY_LEFT);
+        in.right = down(GLFW_KEY_RIGHT);
+        in.run = down(GLFW_KEY_LEFT_SHIFT) || down(GLFW_KEY_RIGHT_SHIFT);
+    }
+    if (controller_.mode() == NavMode::Fly && controller_.anyButtonDown()) {
+        double x = 0, y = 0;
+        int w = 1, h = 1;
+        glfwGetCursorPos(window_, &x, &y);
+        glfwGetWindowSize(window_, &w, &h);
+        in.steering = true;
+        in.stickX = static_cast<float>((x - w * 0.5) / (w * 0.5));
+        in.stickY = static_cast<float>((y - h * 0.5) / (h * 0.5));
+    }
+    bool walking = controller_.mode() == NavMode::Walk &&
+                   (in.forward || in.back || in.left || in.right || controller_.anyButtonDown());
+    if (in.steering || walking) lastNavInput_ = glfwGetTime();
+    return in;
 }
 
 void ViewerApp::drawLoadingFrame(const std::string& message) {
@@ -231,6 +284,7 @@ void ViewerApp::drawLoadingFrame(const std::string& message) {
 // ---------------------------------------------------------------------------
 
 void ViewerApp::run() {
+    double lastFrame = glfwGetTime();
     double fpsWindowStart = glfwGetTime();
     double startTime = fpsWindowStart;
     int frames = 0;
@@ -239,6 +293,8 @@ void ViewerApp::run() {
 
         ++frames;
         double now = glfwGetTime();
+        controller_.update(now - lastFrame, sampleNavInput(), settings_.zScale, groundFn_);
+        lastFrame = now;
         if (now - fpsWindowStart >= 0.5) {
             fps_ = frames / (now - fpsWindowStart);
             frames = 0;
@@ -307,8 +363,13 @@ void ViewerApp::renderFrame() {
     GLBounds bounds = scene_.bounds(true);
     if (!bounds.valid()) bounds = scene_.bounds(false);
     if (bounds.valid()) {
+        // Walk and Fly: near plane down to 10 cm, so nothing at the
+        // viewer's feet is clipped.
+        float minNear = controller_.mode() == NavMode::Orbit
+                            ? 0.001f
+                            : static_cast<float>(0.1 / scene_.frame.scale);
         computeNearFar(camera_, bounds.min, bounds.max, settings_.zScale, camera_.nearP,
-                       camera_.farP);
+                       camera_.farP, minNear);
     }
     RenderContext ctx = makeContext();
 
@@ -404,7 +465,14 @@ void ViewerApp::onKey(int key, int action, int mods) {
     case GLFW_KEY_DOWN:
     case GLFW_KEY_LEFT:
     case GLFW_KEY_RIGHT:
-        controller_.onArrowKey(key);
+        controller_.onArrowKey(key); // Orbit: move; Fly: speed; Walk: sampled per frame
+        lastNavInput_ = glfwGetTime();
+        break;
+    case GLFW_KEY_SPACE:
+        if (controller_.mode() == NavMode::Fly) {
+            controller_.flyStop();
+            lastNavInput_ = glfwGetTime();
+        }
         break;
     default:
         break;
@@ -420,6 +488,15 @@ void ViewerApp::onChar(unsigned int c) {
     switch (c) {
     case 'h':
         ui_.showHelp = !ui_.showHelp;
+        break;
+    case '1':
+        setNavMode(NavMode::Orbit);
+        break;
+    case '2':
+        setNavMode(NavMode::Fly);
+        break;
+    case '3':
+        setNavMode(NavMode::Walk);
         break;
     case 'l':
         ui_.showLog = !ui_.showLog;
@@ -472,7 +549,7 @@ void ViewerApp::onChar(unsigned int c) {
         resetView();
         break;
     case 'p':
-        camera_.ortho = !camera_.ortho;
+        if (controller_.mode() == NavMode::Orbit) camera_.ortho = !camera_.ortho;
         break;
     case 'v':
         controller_.sideView();
@@ -495,6 +572,7 @@ void ViewerApp::onMouseButton(int button, int action, int mods) {
     double x = 0, y = 0;
     glfwGetCursorPos(window_, &x, &y);
     controller_.onMouseButton(button, pressed, x, y, glfwGetTime());
+    lastNavInput_ = glfwGetTime();
 }
 
 void ViewerApp::onCursor(double x, double y) {
@@ -502,12 +580,14 @@ void ViewerApp::onCursor(double x, double y) {
     int winW = 1, winH = 1;
     glfwGetWindowSize(window_, &winW, &winH);
     controller_.onCursor(x, y, static_cast<float>(std::max(winH, 1)));
+    if (controller_.anyButtonDown()) lastNavInput_ = glfwGetTime();
 }
 
 void ViewerApp::onScroll(double dy) {
     if (!snapshotPath_.empty()) return;
     if (ImGui::GetIO().WantCaptureMouse) return;
     controller_.onScroll(dy);
+    lastNavInput_ = glfwGetTime();
 }
 
 void ViewerApp::onFramebufferSize(int w, int h) {

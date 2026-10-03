@@ -84,6 +84,7 @@ Command-line interface:
 - `-o ortho.tif` sets the orthophoto; `-d dem.tif` adds a DEM explicitly (required for 8-bit Terrain-RGB DEMs, which look like imagery); `-cop cloud.laz` adds a point cloud explicitly.
 - `-dtm` / `-mnt` are aliases of `-d`; `-dhm` / `-mnh` add a height model and `-dsm` / `-mns` a surface model, laid over the DTM they overlap (§2.2b). Either needs at least one DEM.
 - `--snapshot out.ppm` renders until every layer is idle, writes the frame as a binary PPM, and exits.
+- `--nav orbit|fly|walk` sets the navigation mode to start in (§7.0).
 - `--dem-lod angle,level` sets the DEM collapse angle (degrees) and maximum quadtree level at load (§9.7).
 - `--view x,y,z,d,yaw,pitch` starts orbiting world point (x, y, z) of the scene CRS from d meters, yaw and pitch in degrees, instead of framing the whole scene.
 - `-h` / `--help` prints usage and exits.
@@ -213,6 +214,15 @@ Terrain-RGB DEMs are decoded before any warp (warping encoded RGB would be meani
 ---
 
 ## 7. Camera & Navigation
+
+### 7.0
+**Three navigation modes** (`CameraController`, `NavMode`), chosen in the View panel (Orbit / Fly / Walk), with keys `1` / `2` / `3`, or at start with `--nav orbit|fly|walk`. Switching keeps the eye where it is and the view direction (Walk levels the gaze and puts the eye on the ground); returning to Orbit restores the orbit distance it had when it was left. `R` (reset) returns to Orbit.
+- **Orbit (GIS/CAD)**, the default: §7.1–7.9, event-driven.
+- **Fly**: the eye keeps moving forward along the view direction at a speed in m/s (default 20). Up/Down arrows and the wheel multiply/divide it by 1.5 (0 to 2000 m/s; from 0, Up restarts at 5 m/s); Space stops. Holding the left button steers like a stick: the cursor's offset from the view centre (−1…1 on each axis, 5 % dead zone, linear beyond) is a turn rate, up to 1.2 rad/s; a cursor above the centre climbs (*Invert pitch* in the panel reverses it). Pitch is clamped to ±89°. Where a terrain model is under the eye, it never goes below 1 m above it.
+- **Walk**: the eye stays *eye height* above the terrain (2 m by default, 0.5–20 m in the panel), sampled every frame under the eye. Up/Down walk forward/back at 1.4 m/s (×4 with Shift), Left/Right step aside, both level whatever the gaze; left drag turns the head (eye fixed, pitch ±89°). With no terrain model under the eye, it keeps a constant height and says so.
+- The terrain is the first visible DEM layer that is not an above-ground layer (MNH/MNS) with data at that point; the DEM mesh keeps a CPU copy of its elevations (nodata filled, mask kept) for this (`DEMTessMesh::GroundSampler`).
+- Fly and Walk read the keys and the cursor every frame and move by the elapsed time (frame-rate independent; a stalled frame counts at most 0.25 s), instead of reacting to key-repeat events. They are perspective-only, ignore double-click focus and Top/Side views, and lower the near-plane floor to 10 cm (§8) so nothing at the viewer's feet is clipped.
+- **Feedback**: a badge at the bottom of the view names the mode in its colour (Orbit blue, Fly orange, Walk green) with what the input does, the fly speed and height above ground, or the walk eye height. In Orbit it appears while the view is manipulated and fades out 2 s later; in Fly and Walk it stays, brighter while steering or walking. Fly draws a reticle (its circle is the stick's dead zone) and, while steering, the stick from the centre to the cursor; Walk draws a crosshair.
 
 ### 7.1
 **Orbit camera**: left mouse drag (without Shift) rotates yaw/pitch around a target point. Pitch clamped to ±89°. Shift+left drag instead turns the viewer's head — see §7.1b.

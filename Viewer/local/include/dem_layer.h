@@ -28,6 +28,11 @@ class DemLayer : public Layer {
     ~DemLayer() override;
 
     DemRole role() const { return role_; }
+    // Ground elevation at world (x, y) from the current mesh's DEM; false
+    // outside it or on nodata.
+    bool groundAt(double x, double y, double& z) const {
+        return mesh_.ground && mesh_.ground->at(x, y, z);
+    }
     // Initial level-of-detail settings (before load()); the panel can still
     // change them.
     void setLod(double collapseAngleDeg, int maxLevel) {

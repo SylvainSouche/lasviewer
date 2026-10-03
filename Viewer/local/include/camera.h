@@ -27,7 +27,9 @@ struct BBoxCorners {
     bool cameraInside = false;
 };
 
-// Compute dynamic near/far from bbox corners in view space.
-// Returns {near, far}. Sets cameraInside if camera is inside the bbox.
+// Compute dynamic near/far from bbox corners in view space. minNear (GL
+// units) is the closest the near plane may come when the eye is inside the
+// bbox: Walk and Fly use a small one so the ground at the viewer's feet is
+// not clipped.
 void computeNearFar(const Camera& cam, const glm::vec3& bboxMin, const glm::vec3& bboxMax,
-                    float zScale, float& nearP, float& farP);
+                    float zScale, float& nearP, float& farP, float minNear = 0.001f);
