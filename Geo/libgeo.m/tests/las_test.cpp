@@ -226,7 +226,61 @@ ATF_TEST_CASE_BODY(test_no_crs) {
     ATF_REQUIRE_EQ(h.epsg, 0);
 }
 
+// A cloud over the 2M-point limit is thinned in one pass: about 2M points
+// kept (no cut-off at exactly 2M, which used to drop the cells reached last
+// in file order), spread evenly, deterministic, and each kept point the
+// first of its cell in file order. Point index i is stored in the RGB
+// (r = low 16 bits, g = high 16 bits) so kept points can be identified.
+ATF_TEST_CASE_WITHOUT_HEAD(test_thinning_streamed);
+ATF_TEST_CASE_BODY(test_thinning_streamed) {
+    const int side = 1600;                    // 2.56M points, scan order
+    const double step = 0.05;                 // 80 m x 80 m
+    std::vector<Pt> corners = {{991000.0, 6557000.0, 10.0, 0, 0, 0},
+                               {991000.0 + step * (side - 1), 6557000.0 + step * (side - 1), 20.0, 0, 0, 0}};
+    const uint32_t n = static_cast<uint32_t>(side) * side;
+    Bytes f = header(2, 227, 0, 2, 26, n, corners);
+    f.patch<uint32_t>(96, static_cast<uint32_t>(f.b.size()));
+    f.b.reserve(f.b.size() + static_cast<size_t>(n) * 26);
+    for (uint32_t i = 0; i < n; ++i) {
+        Pt p{991000.0 + step * (i % side), 6557000.0 + step * (i / side), 10.0 + (i % 7),
+             static_cast<uint16_t>(i & 0xFFFF), static_cast<uint16_t>(i >> 16), 0};
+        pointRecord(f, p, 2);
+    }
+    std::ofstream("big.las", std::ios::binary).write(f.b.data(), static_cast<std::streamsize>(f.b.size()));
+
+    CloudHeader h;
+    ATF_REQUIRE(readCloudHeader("big.las", h));
+    SceneFrame frame = SceneFrame::fromBounds(h.bounds);
+    PointCloud a, b;
+    ATF_REQUIRE(loadPointCloud("big.las", frame, a));
+    ATF_REQUIRE(loadPointCloud("big.las", frame, b));
+    ATF_REQUIRE(a.positions == b.positions && a.colors == b.colors); // deterministic
+    // The points are denser than the ~1415 x 1415 grid, so every cell is
+    // occupied and every cell must be kept: more than 2M exactly (the old
+    // loader stopped at 2,000,000, dropping the cells reached last).
+    ATF_REQUIRE(a.pointCount > 2'000'000 && a.pointCount < 2'050'000);
+
+    // Recover each kept point's file index; indices strictly increase (file
+    // order kept), and the grid's last row (the cells reached last in file
+    // order, which the old cut-off at exactly 2M dropped) is represented.
+    uint32_t prev = 0;
+    int lastRows = 0;
+    std::vector<int> blocks(16, 0);           // 4 x 4 blocks of the area
+    for (size_t k = 0; k < a.pointCount; ++k) {
+        uint32_t r = static_cast<uint32_t>(std::lround(a.colors[k * 3] * 65535.0));
+        uint32_t g = static_cast<uint32_t>(std::lround(a.colors[k * 3 + 1] * 65535.0));
+        uint32_t idx = r | (g << 16);
+        ATF_REQUIRE(k == 0 || idx > prev);
+        prev = idx;
+        if (idx / side >= side - 3) ++lastRows;
+        blocks[(idx / side) * 4 / side * 4 + (idx % side) * 4 / side]++;
+    }
+    ATF_REQUIRE(lastRows > side / 2);        // about one grid row (~1400 cells)
+    for (int c : blocks) ATF_REQUIRE(std::abs(c - static_cast<int>(a.pointCount / 16)) < static_cast<int>(a.pointCount / 160));
+}
+
 ATF_INIT_TEST_CASES(tcs) {
+    ATF_ADD_TEST_CASE(tcs, test_thinning_streamed);
     ATF_ADD_TEST_CASE(tcs, test_record_layout);
     ATF_ADD_TEST_CASE(tcs, test_las12_geokeys_rgb);
     ATF_ADD_TEST_CASE(tcs, test_las14_evlr_wkt_rgb);
