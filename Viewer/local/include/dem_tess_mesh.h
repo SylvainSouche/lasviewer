@@ -65,6 +65,10 @@ struct DemStyle {
     DemAux auxMode = DemAux::None;
     float threshold = 0.0f; // meters, see DemAux
     bool shade = true;      // hill-shading from the heightmap gradient
+    // Elevation colour ramp range (GL-space Y, unscaled). Shared by all DEM
+    // layers of a scene so that one elevation has one colour across tiles;
+    // when rampMin >= rampMax the mesh uses its own range.
+    float rampMin = 0.0f, rampMax = 0.0f;
 };
 
 // True if the current GL context supports tessellation shaders (GL >= 4.0).

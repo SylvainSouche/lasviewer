@@ -2,6 +2,7 @@
 // The ImGui panels live in viewer_ui.cpp.
 #include "viewer_app.h"
 
+#include "dem_layer.h"
 #include "dem_tess_mesh.h"
 #include "shaders.h"
 
@@ -300,6 +301,17 @@ RenderContext ViewerApp::makeContext() {
     ctx.settings = &settings_;
     ctx.programs = &programs_;
     ctx.hiz = hizOk_ ? &hiz_ : nullptr;
+    // One elevation colour ramp for all DEMs (all loaded ones, not just the
+    // visible ones, so hiding a tile doesn't recolour the others).
+    bool first = true;
+    for (const auto& l : scene_.layers) {
+        const auto* dem = dynamic_cast<const DemLayer*>(l.get());
+        float lo = 0.0f, hi = 0.0f;
+        if (!dem || !dem->elevationRangeGL(lo, hi)) continue;
+        ctx.demRampMin = first ? lo : std::min(ctx.demRampMin, lo);
+        ctx.demRampMax = first ? hi : std::max(ctx.demRampMax, hi);
+        first = false;
+    }
     return ctx;
 }
 

@@ -48,6 +48,8 @@ void DemLayer::update(const RenderContext&) {
 DemStyle DemLayer::style(const RenderContext& ctx) const {
     DemStyle st;
     st.opacity = opacity_;
+    st.rampMin = ctx.demRampMin;
+    st.rampMax = ctx.demRampMax;
     st.shade = shade_;
     st.threshold = ctx.settings->heightThreshold;
     if (role_ == DemRole::AboveGround) {

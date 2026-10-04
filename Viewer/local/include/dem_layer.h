@@ -28,6 +28,14 @@ class DemLayer : public Layer {
     ~DemLayer() override;
 
     DemRole role() const { return role_; }
+    // Elevation range of the current mesh (GL-space Y, unscaled); false
+    // before the first mesh is ready.
+    bool elevationRangeGL(float& lo, float& hi) const {
+        if (!mesh_.valid) return false;
+        lo = mesh_.glBBoxMinY;
+        hi = mesh_.glBBoxMaxY;
+        return true;
+    }
     // Initial level-of-detail settings (before load()); the panel can still
     // change them.
     void setLod(double collapseAngleDeg, int maxLevel) {

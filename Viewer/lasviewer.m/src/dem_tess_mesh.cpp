@@ -613,8 +613,11 @@ void DEMTessMesh::render(GLuint tessProgram, const glm::mat4& V, const glm::mat4
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, heightmapTex);
 
-    glUniform1f(glGetUniformLocation(tessProgram, "uMinElev"), glBBoxMinY);
-    glUniform1f(glGetUniformLocation(tessProgram, "uMaxElev"), glBBoxMaxY);
+    const bool sharedRamp = style.rampMin < style.rampMax;
+    glUniform1f(glGetUniformLocation(tessProgram, "uMinElev"),
+                sharedRamp ? style.rampMin : glBBoxMinY);
+    glUniform1f(glGetUniformLocation(tessProgram, "uMaxElev"),
+                sharedRamp ? style.rampMax : glBBoxMaxY);
 
     if (colorTex && showTexture) {
         glUniform1i(glGetUniformLocation(tessProgram, "uHasTexture"), 1);
