@@ -100,7 +100,13 @@ void readGeo(GDALDataset& ds, RasterGeo& g) {
 }
 
 bool crsDiffers(const RasterGeo& g, const std::string& sceneWkt) {
-    return g.hasGeo && !g.wkt.empty() && !sceneWkt.empty() && !sameHorizontalCRS(g.wkt, sceneWkt);
+    if (!g.hasGeo || g.wkt.empty() || sceneWkt.empty()) return false;
+    // Area for the practical-equivalence test: 10 km around the raster's
+    // origin (its size is not known here; the test only needs to see where
+    // the two CRSs would move points).
+    WorldBounds near;
+    near.extendXY(g.C - 5000.0, g.F - 5000.0, g.C + 5000.0, g.F + 5000.0);
+    return !sameHorizontalCRS(g.wkt, sceneWkt, &near);
 }
 
 // Rotated/sheared grids are warped to north-up too: the rest of the viewer
@@ -172,12 +178,36 @@ int horizontalEPSG(const std::string& wkt) {
     return 0;
 }
 
-bool sameHorizontalCRS(const std::string& wktA, const std::string& wktB) {
+bool sameHorizontalCRS(const std::string& wktA, const std::string& wktB, const WorldBounds* where) {
     OGRSpatialReference a, b;
     if (!importHorizontal(wktA, a) || !importHorizontal(wktB, b)) return false;
     const char* opts[] = {"IGNORE_DATA_AXIS_TO_SRS_AXIS_MAPPING=YES",
                           "CRITERION=EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS", nullptr};
-    return a.IsSame(&b, opts);
+    if (a.IsSame(&b, opts)) return true;
+    if (!where || !where->valid() || a.IsGeographic() != b.IsGeographic()) return false;
+    // Same in practice: transforming points over the area moves none of them
+    // by more than 1 mm (1e-8° for geographic CRSs). Catches the same
+    // projection written differently, e.g. IGN LiDAR HD rasters whose
+    // "EPSG:2154" has an unnamed datum on the WGS84 ellipsoid, which IsSame()
+    // tells apart from the real EPSG:2154 although no point moves.
+    std::unique_ptr<OGRCoordinateTransformation, TransformDeleter> ct(
+        OGRCreateCoordinateTransformation(&a, &b));
+    if (!ct) return false;
+    const int n = 5;
+    std::vector<double> xs, ys;
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) {
+            xs.push_back(where->min.x + (where->max.x - where->min.x) * i / (n - 1));
+            ys.push_back(where->min.y + (where->max.y - where->min.y) * j / (n - 1));
+        }
+    std::vector<double> tx = xs, ty = ys;
+    std::vector<int> ok(xs.size());
+    if (!ct->Transform(static_cast<int>(tx.size()), tx.data(), ty.data(), nullptr, ok.data()))
+        return false;
+    const double tol = b.IsGeographic() ? 1e-8 : 1e-3 / b.GetLinearUnits();
+    for (size_t i = 0; i < xs.size(); ++i)
+        if (!ok[i] || std::abs(tx[i] - xs[i]) > tol || std::abs(ty[i] - ys[i]) > tol) return false;
+    return true;
 }
 
 bool transformExtent(WorldBounds& b, const std::string& fromWkt, const std::string& toWkt) {

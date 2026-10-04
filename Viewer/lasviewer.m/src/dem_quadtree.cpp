@@ -145,7 +145,14 @@ int balanceLeaves(std::vector<QuadCell>& leaves, int coarse, int maxLevel, doubl
     return passes;
 }
 
-void edgeCodes(const QuadCell& c, const LeafIndex& index, int maxLevel, float out[4]) {
+void cellCorner(const QuadCell& c, int k, int maxLevel, int& fx, int& fy) {
+    const int s = span(c.level, maxLevel);
+    fx = c.ix * s + ((k == 1 || k == 2) ? s : 0);
+    fy = c.iy * s + ((k >= 2) ? s : 0);
+}
+
+void edgeCodes(const QuadCell& c, const LeafIndex& index, int maxLevel, float out[4],
+               int far[4][2]) {
     const int s = span(c.level, maxLevel);
     const int x0 = c.ix * s, y0 = c.iy * s, mid = s / 2;
     // Probe beside the edge's midpoint; after balancing, a neighbour region is
@@ -155,8 +162,35 @@ void edgeCodes(const QuadCell& c, const LeafIndex& index, int maxLevel, float ou
         {x0 + mid, y0 - 1}, {x0 + s, y0 + mid}, {x0 + mid, y0 + s}, {x0 - 1, y0 + mid}};
     for (int side = 0; side < 4; ++side) {
         int L = index.levelAt(probes[side][0], probes[side][1]);
-        out[side] = (L < 0 || L == c.level) ? 0.0f : (L < c.level ? 1.0f : 2.0f);
+        if (L < 0 || L == c.level) {
+            out[side] = 0.0f;
+        } else if (L > c.level) {
+            out[side] = 2.0f;
+        } else {
+            // Fine side: the coarse edge is the parent's edge on this side
+            // (one-level balance: the coarse neighbour is the parent's size).
+            QuadCell parent = c;
+            parent.level = c.level - 1;
+            parent.ix = c.ix >> 1;
+            parent.iy = c.iy >> 1;
+            int cx, cy, px0, py0, px1, py1;
+            cellCorner(c, side, maxLevel, cx, cy);
+            cellCorner(parent, side, maxLevel, px0, py0);
+            cellCorner(parent, (side + 1) % 4, maxLevel, px1, py1);
+            const bool sharesStart = cx == px0 && cy == py0;
+            out[side] = sharesStart ? 1.0f : 3.0f;
+            if (far) {
+                far[side][0] = sharesStart ? px1 : px0;
+                far[side][1] = sharesStart ? py1 : py0;
+            }
+        }
     }
+}
+
+int levelForSpan(double cw0, double ch0, double maxSpanPx) {
+    int level = 0;
+    for (double sz = std::max(cw0, ch0); sz > maxSpanPx && level < 20; sz *= 0.5) ++level;
+    return level;
 }
 
 std::vector<QuadCell> buildLeaves(const DemGrid& g, int coarse, int maxLevel, double angleDeg,

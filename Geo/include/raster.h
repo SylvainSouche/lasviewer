@@ -65,8 +65,11 @@ void rasterExtent(const RasterGeo& g, int width, int height, double& minX, doubl
 bool transformExtent(WorldBounds& b, const std::string& fromWkt, const std::string& toWkt);
 
 // True when both CRSs are known and describe the same horizontal system
-// (vertical components ignored, e.g. EPSG:2154 vs EPSG:2154+5720).
-bool sameHorizontalCRS(const std::string& wktA, const std::string& wktB);
+// (vertical components ignored, e.g. EPSG:2154 vs EPSG:2154+5720). With
+// `where` (an area in A's coordinates), also true when the two differ only
+// on paper: transforming points of that area moves none by more than 1 mm.
+bool sameHorizontalCRS(const std::string& wktA, const std::string& wktB,
+                       const WorldBounds* where = nullptr);
 
 // Horizontal EPSG code of a WKT CRS, 0 if not identifiable.
 int horizontalEPSG(const std::string& wkt);

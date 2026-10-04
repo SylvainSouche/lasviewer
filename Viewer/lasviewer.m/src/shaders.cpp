@@ -247,7 +247,10 @@ void main() {
 //     height from the same heightmap texels;
 //   - at a one-level transition (the most the CPU balance pass allows) the
 //     coarse side splits its edge into 2K segments and each fine half edge
-//     into K, so all vertices coincide.
+//     into K, so all vertices coincide. K follows the view like a free edge:
+//     both sides compute it from the coarse edge's endpoints (the fine side
+//     gets the far one from the CPU), with the same operands in the same
+//     order, so they agree exactly.
 //
 // Requires GL 4.0+; targets #version 410 core (macOS's ceiling).
 // ---------------------------------------------------------------------------
@@ -264,15 +267,23 @@ layout (location = 3) in vec2 aHeightUV; // DEM-raster-relative — see
                                          // NOT the same space as aUV, which
                                          // is orthophoto-relative.
 layout (location = 4) in vec4 aEdgeConstraint; // x=bottom,y=right,z=top,w=left
+// For the edge starting at this corner, when this patch is its fine side:
+// the coarse edge's other end (position, heightmap UV).
+layout (location = 5) in vec3 aFarPos;
+layout (location = 6) in vec2 aFarHeightUV;
 out vec3 vPosVC;
 out vec2 vUVVC;
 out vec2 vHeightUVVC;
 out vec4 vEdgeConstraintVC;
+out vec3 vFarPosVC;
+out vec2 vFarHeightUVVC;
 void main() {
     vPosVC = aPos;
     vUVVC = aUV;
     vHeightUVVC = aHeightUV;
     vEdgeConstraintVC = aEdgeConstraint;
+    vFarPosVC = aFarPos;
+    vFarHeightUVVC = aFarHeightUV;
 }
 )GLSL";
 
@@ -284,6 +295,8 @@ in vec3 vPosVC[];
 in vec2 vUVVC[];
 in vec2 vHeightUVVC[];
 in vec4 vEdgeConstraintVC[];
+in vec3 vFarPosVC[];
+in vec2 vFarHeightUVVC[];
 out vec3 vPosTC[];
 out vec2 vUVTC[];
 out vec2 vHeightUVTC[];
@@ -293,31 +306,45 @@ uniform float uViewportH;
 uniform float uTanHalfFov;
 uniform float uZScale;
 uniform float uTargetPixelsPerSegment;
-uniform float uTransitionSegments; // K, an integer: see outerLevelFor()
 uniform vec2 uHeightmapTexels;     // heightmap size in texels
 
 // Screen-space level for an edge, capped at the number of heightmap texels
 // it spans: beyond one vertex per DEM pixel there is nothing new to sample.
-// Both patches sharing an edge pass identical endpoints and UVs, so they
-// compute identical levels (no crack).
+// Both patches sharing an edge pass identical endpoints and UVs (in reverse
+// order, which the formula is symmetric in), so they compute identical
+// levels (no crack). `precise`: no reassociation that could differ between
+// call sites.
 float freeEdgeTessLevel(vec3 aGL, vec3 bGL, vec2 uvA, vec2 uvB) {
-    vec3 a = vec3(aGL.x, aGL.y * uZScale, aGL.z);
-    vec3 b = vec3(bGL.x, bGL.y * uZScale, bGL.z);
-    float dist = max(length((a + b) * 0.5 - uCamPos), 0.0001);
-    float pxPerUnit = uViewportH / (2.0 * dist * uTanHalfFov);
-    float level = length(b - a) * pxPerUnit / uTargetPixelsPerSegment;
-    float texels = length((uvB - uvA) * uHeightmapTexels);
+    precise vec3 a = vec3(aGL.x, aGL.y * uZScale, aGL.z);
+    precise vec3 b = vec3(bGL.x, bGL.y * uZScale, bGL.z);
+    precise float dist = max(length((a + b) * 0.5 - uCamPos), 0.0001);
+    precise float pxPerUnit = uViewportH / (2.0 * dist * uTanHalfFov);
+    precise float level = length(b - a) * pxPerUnit / uTargetPixelsPerSegment;
+    precise float texels = length((uvB - uvA) * uHeightmapTexels);
     return clamp(min(level, max(texels, 1.0)), 1.0, 64.0);
 }
 
-// Edge codes from the CPU (dem_quadtree.h edgeCodes): 0 = free, 1 = this
-// patch is the finer side of a one-level transition, 2 = the coarser side.
-// The coarse side splits its edge into 2K segments and each fine half edge
-// into K, so every vertex along the edge exists on both sides, at the same
-// position and (sampled from the same heightmap) the same height.
+// K for a level transition whose coarse edge, as the coarse patch sees it
+// (its CCW order), runs from a to b: half the coarse edge's free level,
+// rounded up, so the coarse side (2K) is at least as fine as a free edge.
+float transitionK(vec3 a, vec3 b, vec2 uvA, vec2 uvB) {
+    return min(ceil(0.5 * freeEdgeTessLevel(a, b, uvA, uvB)), 32.0);
+}
+
+// Edge codes from the CPU (dem_quadtree.h edgeCodes): 0 = free, 2 = this
+// patch is the coarser side of a one-level transition, 1 / 3 = the finer
+// side, the coarse edge starting at this edge's start corner (1) or ending
+// at its end corner (3). Edge i→j is the edge starting at corner i, whose
+// far coarse end the CPU put on corner i. The coarse patch runs the shared
+// edge in the opposite direction, so the fine side passes the coarse edge
+// reversed to match it operand for operand.
 float outerLevelFor(int i, int j, float code) {
-    if (code > 1.5) return 2.0 * uTransitionSegments;
-    if (code > 0.5) return uTransitionSegments;
+    if (code > 2.5) // coarse edge = (far, corner j); the coarse patch sees (j, far)
+        return transitionK(vPosTC[j], vFarPosVC[i], vHeightUVTC[j], vFarHeightUVVC[i]);
+    if (code > 1.5)
+        return 2.0 * transitionK(vPosTC[i], vPosTC[j], vHeightUVTC[i], vHeightUVTC[j]);
+    if (code > 0.5) // coarse edge = (corner i, far); the coarse patch sees (far, i)
+        return transitionK(vFarPosVC[i], vPosTC[i], vFarHeightUVVC[i], vHeightUVTC[i]);
     return freeEdgeTessLevel(vPosTC[i], vPosTC[j], vHeightUVTC[i], vHeightUVTC[j]);
 }
 

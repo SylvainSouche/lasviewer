@@ -60,13 +60,6 @@ static const int kCoarse = 8;
 // this many DEM pixels: every pixel stays reachable.
 static const double kMaxTessSegments = 64.0;
 
-// NOTE: the actual fixed tessellation level used for constrained (LOD-
-// transition) edges lives in the shader as CONSTRAINED_EDGE_TESS_LEVEL
-// (src/shaders.cpp, kMeshTessControl) — the CPU side here only classifies
-// each patch edge as constrained (1.0) or unconstrained (0.0) via
-// patchEdgeConstraint; the shader decides what value a constrained edge
-// actually gets. No CPU-side constant needed (would be unused/dead code).
-
 // Heightmap texture is capped at this many texels (downsampled via box
 // filter if the source DEM is larger), matching the spirit of the existing
 // orthophoto downsample cap in raster.cpp::loadOrthophoto.
@@ -254,6 +247,14 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
     const DemGrid grid{filled.data(), nodataMask.data(), static_cast<int>(w), static_cast<int>(h)};
     const double cw0 = static_cast<double>(w - 1) / kCoarse;
     const double ch0 = static_cast<double>(h - 1) / kCoarse;
+    // Deep enough for every leaf to span at most kMaxTessSegments pixels:
+    // otherwise, up close, a patch's 64 segments per edge skip DEM pixels.
+    const int spanLevel = levelForSpan(cw0, ch0, kMaxTessSegments);
+    if (spanLevel > maxLevel) {
+        std::cerr << "[dem-tess] max level raised from " << maxLevel << " to " << spanLevel
+                  << " (patches of at most " << kMaxTessSegments << " pixels)" << std::endl;
+        maxLevel = spanLevel;
+    }
 
     std::vector<QuadCell> leaves =
         buildLeaves(grid, kCoarse, maxLevel, collapseAngleDeg, std::abs(geo.A), std::abs(geo.E),
@@ -297,36 +298,52 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
     patchUVs.clear();
     patchHeightUVs.clear();
     patchEdgeConstraint.clear();
+    patchEdgeFar.clear();
     patchPositions.reserve(leaves.size() * 4 * 3);
     patchUVs.reserve(leaves.size() * 4 * 2);
     patchHeightUVs.reserve(leaves.size() * 4 * 2);
     patchEdgeConstraint.reserve(leaves.size() * 4 * 4);
+    patchEdgeFar.reserve(leaves.size() * 4 * 5);
 
-    auto addCorner = [&](double col, double row) {
-        float elev = grid.sample(col, row);
-        double wx = geo.C + geo.A * col;
-        double wy = geo.F + geo.E * row;
-        patchPositions.push_back(static_cast<float>((wx - worldCenter.x) * invScale));
-        patchPositions.push_back(static_cast<float>((elev - worldCenter.z) * invScale));
-        patchPositions.push_back(static_cast<float>(-(wy - worldCenter.y) * invScale));
-        auto [u, v] = uvFor(col, row);
-        patchUVs.push_back(u);
-        patchUVs.push_back(v);
+    // Corners are placed from finest-lattice coordinates (cellCorner), so a
+    // corner shared by several patches, or given as a coarse edge's far end,
+    // gets bit-identical values from each: the TCS levels computed from them
+    // then agree on both sides of every edge.
+    const double cwF = cw0 / static_cast<double>(1 << maxLevel);
+    const double chF = ch0 / static_cast<double>(1 << maxLevel);
+    auto glPoint = [&](int fx, int fy, float out[5]) {
+        const double col = fx * cwF, row = fy * chF;
+        const float elev = grid.sample(col, row);
+        const double wx = geo.C + geo.A * col;
+        const double wy = geo.F + geo.E * row;
+        out[0] = static_cast<float>((wx - worldCenter.x) * invScale);
+        out[1] = static_cast<float>((elev - worldCenter.z) * invScale);
+        out[2] = static_cast<float>(-(wy - worldCenter.y) * invScale);
         auto [hu, hv] = demUVFor(col, row);
-        patchHeightUVs.push_back(hu);
-        patchHeightUVs.push_back(hv);
+        out[3] = hu;
+        out[4] = hv;
     };
 
     const LeafIndex index(leaves, kCoarse, maxLevel);
     for (const QuadCell& c : leaves) {
         float codes[4];
-        edgeCodes(c, index, maxLevel, codes);
-        addCorner(c.col, c.row);
-        addCorner(c.col + c.cw, c.row);
-        addCorner(c.col + c.cw, c.row + c.ch);
-        addCorner(c.col, c.row + c.ch);
-        for (int k = 0; k < 4; ++k)
+        int far[4][2] = {};
+        edgeCodes(c, index, maxLevel, codes, far);
+        for (int k = 0; k < 4; ++k) {
+            int fx, fy;
+            cellCorner(c, k, maxLevel, fx, fy);
+            float p[5];
+            glPoint(fx, fy, p);
+            patchPositions.insert(patchPositions.end(), p, p + 3);
+            auto [u, v] = uvFor(fx * cwF, fy * chF);
+            patchUVs.push_back(u);
+            patchUVs.push_back(v);
+            patchHeightUVs.insert(patchHeightUVs.end(), p + 3, p + 5);
             patchEdgeConstraint.insert(patchEdgeConstraint.end(), codes, codes + 4);
+            float q[5] = {};
+            if (codes[k] == 1.0f || codes[k] == 3.0f) glPoint(far[k][0], far[k][1], q);
+            patchEdgeFar.insert(patchEdgeFar.end(), q, q + 5);
+        }
     }
     patchCount = static_cast<int>(leaves.size());
 
@@ -435,6 +452,7 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
     glGenBuffers(1, &uvVBO);
     glGenBuffers(1, &heightUVVBO);
     glGenBuffers(1, &edgeConstraintVBO);
+    glGenBuffers(1, &edgeFarVBO);
 
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, posVBO);
@@ -469,6 +487,14 @@ bool DEMTessMesh::uploadGPU(const Orthophoto* ortho) {
                  patchEdgeConstraint.data(), GL_STATIC_DRAW);
     glEnableVertexAttribArray(4);
     glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+
+    glBindBuffer(GL_ARRAY_BUFFER, edgeFarVBO);
+    glBufferData(GL_ARRAY_BUFFER, patchEdgeFar.size() * sizeof(float), patchEdgeFar.data(),
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(5);
+    glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(6);
+    glVertexAttribPointer(6, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
 
     glBindVertexArray(0);
 
@@ -600,16 +626,10 @@ void DEMTessMesh::render(GLuint tessProgram, const glm::mat4& V, const glm::mat4
     float tanHalfFov = std::tan(glm::radians(fov) * 0.5f);
     glUniform1f(glGetUniformLocation(tessProgram, "uTanHalfFov"), tanHalfFov);
 
-    // targetPixelsPerSegment drives the free (same-level edge) formula. The
-    // constrained (LOD-transition) level scales with it from the design
-    // defaults (8 px ↔ 4.0) so both stay consistent; both sides of such an
-    // edge read the same uniform, so it stays crack-free at any setting.
+    // One segment per targetPixelsPerSegment pixels on screen, for free
+    // edges and level transitions alike (see kMeshTessControl).
     float clampedTargetPx = glm::clamp(targetPixelsPerSegment, 0.01f, 64.0f);
     glUniform1f(glGetUniformLocation(tessProgram, "uTargetPixelsPerSegment"), clampedTargetPx);
-    // Segments K of each fine half edge at a level transition (the coarse
-    // side uses 2K, at most 64): an integer, so both sides split exactly.
-    float transition = std::round(glm::clamp(4.0f * (8.0f / clampedTargetPx), 1.0f, 32.0f));
-    glUniform1f(glGetUniformLocation(tessProgram, "uTransitionSegments"), transition);
     glUniform2f(glGetUniformLocation(tessProgram, "uHeightmapTexels"),
                 static_cast<float>(heightmapTexW), static_cast<float>(heightmapTexH));
     glUniform2f(
@@ -669,7 +689,8 @@ void DEMTessMesh::releaseGeometryGL() {
     if (uvVBO) glDeleteBuffers(1, &uvVBO);
     if (heightUVVBO) glDeleteBuffers(1, &heightUVVBO);
     if (edgeConstraintVBO) glDeleteBuffers(1, &edgeConstraintVBO);
-    vao = posVBO = uvVBO = heightUVVBO = edgeConstraintVBO = 0;
+    if (edgeFarVBO) glDeleteBuffers(1, &edgeFarVBO);
+    vao = posVBO = uvVBO = heightUVVBO = edgeConstraintVBO = edgeFarVBO = 0;
     heightmapTex = 0;
     valid = false;
 }
@@ -791,6 +812,7 @@ bool DEMTessMesh::pollBackgroundBuild(const Orthophoto* ortho) {
             patchUVs = std::move(pending->patchUVs);
             patchHeightUVs = std::move(pending->patchHeightUVs);
             patchEdgeConstraint = std::move(pending->patchEdgeConstraint);
+            patchEdgeFar = std::move(pending->patchEdgeFar);
             patchCount = pending->patchCount;
             heightmapGLSpace = std::move(pending->heightmapGLSpace);
             heightmapValid = std::move(pending->heightmapValid);

@@ -152,6 +152,24 @@ ATF_TEST_CASE_BODY(test_crs_helpers) {
     CHECK(!sameHorizontalCRS(l93, wgs));
     CHECK(!sameHorizontalCRS(l93, ""));
     CHECK(horizontalEPSG(l93ngf) == 2154);
+
+    // IGN LiDAR HD rasters declare "EPSG:2154" with an unnamed datum on the
+    // WGS84 ellipsoid: different on paper, the same in practice (no point
+    // moves), which needs an area to tell.
+    const std::string lhd =
+        "PROJCS[\"EPSG:2154\",GEOGCS[\"unknown\",DATUM[\"unnamed\",SPHEROID[\"unretrievable - "
+        "using WGS84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\","
+        "0.0174532925199433]],PROJECTION[\"Lambert_Conformal_Conic_2SP\"],PARAMETER["
+        "\"latitude_of_origin\",46.5],PARAMETER[\"central_meridian\",3],PARAMETER["
+        "\"standard_parallel_1\",49],PARAMETER[\"standard_parallel_2\",44],PARAMETER["
+        "\"false_easting\",700000],PARAMETER[\"false_northing\",6600000],UNIT[\"metre\",1]]";
+    WorldBounds alps;
+    alps.extendXY(983000, 6547000, 986000, 6550000);
+    CHECK(!sameHorizontalCRS(lhd, l93));
+    CHECK(sameHorizontalCRS(lhd, l93, &alps));
+    CHECK(sameHorizontalCRS(l93, lhd, &alps));
+    // A really different CRS stays different (Lambert II étendu, NTF).
+    CHECK(!sameHorizontalCRS(wktOf("EPSG:27572"), l93, &alps));
     CHECK(horizontalEPSG(wgs) == 4326);
     CHECK(horizontalEPSG("") == 0);
 

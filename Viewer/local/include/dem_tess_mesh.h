@@ -81,9 +81,12 @@ struct DEMTessMesh {
     std::vector<float> patchPositions; // 3 floats/vertex
     std::vector<float> patchUVs;       // 2 floats/vertex, orthophoto-relative
     std::vector<float> patchHeightUVs; // 2 floats/vertex, DEM-raster-relative
-    // Per-patch edge constraint replicated to all 4 corners (x=bottom,
-    // y=right, z=top, w=left): 0 = free tessellation, 1 = LOD transition.
+    // Per-patch edge codes (dem_quadtree.h edgeCodes) replicated to all 4
+    // corners (x=bottom, y=right, z=top, w=left).
     std::vector<float> patchEdgeConstraint; // 4 floats/vertex
+    // Corner k carries, for edge k→k+1 when this patch is its fine side, the
+    // coarse edge's other end: GL position and heightmap UV (else zeros).
+    std::vector<float> patchEdgeFar; // 5 floats/vertex
     int patchCount = 0;
 
     // Heightmap in GL-space Y, and the auxiliary raster (meters, same grid),
@@ -123,9 +126,11 @@ struct DEMTessMesh {
     // Build parameters of the current mesh. Both are load-time quadtree
     // parameters, so changing either needs a rebuild (requestBackgroundBuild).
     double collapseAngleDeg = 1.0; // angular geometric-error threshold
-    int maxLevel = 5;              // quadtree depth ceiling (COARSE * 2^maxLevel per axis)
+    // Quadtree depth ceiling (COARSE * 2^maxLevel per axis). A build raises
+    // the requested one if needed so that cells span at most 64 pixels.
+    int maxLevel = 5;
 
-    GLuint vao = 0, posVBO = 0, uvVBO = 0, heightUVVBO = 0, edgeConstraintVBO = 0;
+    GLuint vao = 0, posVBO = 0, uvVBO = 0, heightUVVBO = 0, edgeConstraintVBO = 0, edgeFarVBO = 0;
     GLuint heightmapTex = 0;
     GLuint auxTex = 0;       // 0 = no auxiliary raster
     GLuint colorTex = 0;     // orthophoto; 0 = elevation ramp

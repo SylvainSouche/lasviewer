@@ -66,15 +66,29 @@ class LeafIndex {
 // cw0/ch0: the level-0 cell size in pixels.
 int balanceLeaves(std::vector<QuadCell>& leaves, int coarse, int maxLevel, double cw0, double ch0);
 
+// Corner k (0..3, CCW from (col,row) as in the patch buffers) of a cell, on
+// the finest-level lattice: integer coordinates, so that a corner shared by
+// several cells is computed from the same numbers by each of them.
+void cellCorner(const QuadCell& c, int k, int maxLevel, int& fx, int& fy);
+
 // How each edge of a leaf must be tessellated, in the order
 // row− (corners 0→1), col+ (1→2), row+ (2→3), col− (3→0):
 //   0  free: same-level neighbour, or none (raster or nodata boundary);
-//   1  this leaf is the finer side of a one-level transition;
+//   1  this leaf is the finer side of a one-level transition, and the
+//      coarse edge starts at this edge's start corner;
+//   3  the same, the coarse edge ending at this edge's end corner;
 //   2  this leaf is the coarser side (its neighbours are two half-size cells).
-// The tessellation shaders give a coarse-side edge exactly twice the segments
-// of each fine-side half edge, so every vertex on one side coincides with
-// one on the other.
-void edgeCodes(const QuadCell& c, const LeafIndex& index, int maxLevel, float out[4]);
+// For a fine side, far[side] is the coarse edge's other end (finest-lattice
+// coordinates): the fine side can then compute the coarse edge's on-screen
+// tessellation level exactly as the coarse side does, and the TCS gives the
+// coarse edge 2K segments and each fine half edge K, so every vertex on one
+// side coincides with one on the other, at a view-dependent K.
+void edgeCodes(const QuadCell& c, const LeafIndex& index, int maxLevel, float out[4],
+               int far[4][2] = nullptr);
+
+// The smallest quadtree depth at which a cell spans at most maxSpanPx
+// pixels, for a level-0 cell of cw0 × ch0 pixels.
+int levelForSpan(double cw0, double ch0, double maxSpanPx);
 
 // Replaces every nodata value by the value of the nearest valid pixel
 // (breadth-first from all valid pixels, 4-neighbour distance), in place.
