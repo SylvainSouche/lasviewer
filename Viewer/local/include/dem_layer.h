@@ -28,6 +28,19 @@ class DemLayer : public Layer {
     ~DemLayer() override;
 
     DemRole role() const { return role_; }
+    // Elevation range of the current mesh (GL-space Y, unscaled); false
+    // before the first mesh is ready.
+    bool elevationRangeGL(float& lo, float& hi) const {
+        if (!mesh_.valid) return false;
+        lo = mesh_.glBBoxMinY;
+        hi = mesh_.glBBoxMaxY;
+        return true;
+    }
+    // Ground elevation at world (x, y) from the current mesh's DEM; false
+    // outside it or on nodata.
+    bool groundAt(double x, double y, double& z) const {
+        return mesh_.ground && mesh_.ground->at(x, y, z);
+    }
     // Initial level-of-detail settings (before load()); the panel can still
     // change them.
     void setLod(double collapseAngleDeg, int maxLevel) {

@@ -28,6 +28,8 @@ class ViewerApp {
         viewYawDeg_ = yawDeg;
         viewPitchDeg_ = pitchDeg;
     }
+    // Navigation mode to start in (after the initial view). Call before init().
+    void setInitialNavMode(NavMode mode) { initialNav_ = mode; }
     void run();
 
     // GLFW callback entry points.
@@ -57,6 +59,12 @@ class ViewerApp {
     void resetView();
     bool saveSnapshot(const std::string& path);
 
+    // Navigation modes (Orbit / Fly / Walk).
+    void setNavMode(NavMode mode);
+    bool groundAt(double x, double y, double& z) const; // first DEM with ground there
+    NavInput sampleNavInput();
+    void drawNavHud();
+
     // UI (viewer_ui.cpp)
     void drawUI();
     void drawMainPanel();
@@ -83,4 +91,7 @@ class ViewerApp {
     bool initialView_ = false;
     glm::dvec3 viewTarget_{0.0};
     double viewDistance_ = 0.0, viewYawDeg_ = 0.0, viewPitchDeg_ = 0.0;
+    NavMode initialNav_ = NavMode::Orbit;
+    GroundFn groundFn_;
+    double lastNavInput_ = -1.0; // time of the last viewpoint manipulation (HUD)
 };

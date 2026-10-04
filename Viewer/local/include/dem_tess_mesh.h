@@ -65,6 +65,10 @@ struct DemStyle {
     DemAux auxMode = DemAux::None;
     float threshold = 0.0f; // meters, see DemAux
     bool shade = true;      // hill-shading from the heightmap gradient
+    // Elevation colour ramp range (GL-space Y, unscaled). Shared by all DEM
+    // layers of a scene so that one elevation has one colour across tiles;
+    // when rampMin >= rampMax the mesh uses its own range.
+    float rampMin = 0.0f, rampMax = 0.0f;
 };
 
 // True if the current GL context supports tessellation shaders (GL >= 4.0).
@@ -90,6 +94,19 @@ struct DEMTessMesh {
     int heightmapSrcW = 0, heightmapSrcH = 0;
     int heightmapTexW = 0, heightmapTexH = 0; // uploaded size (after any downsample)
     double demPixelW = 1.0, demPixelH = 1.0;  // world size of one DEM pixel
+
+    // CPU copy of the DEM's elevations (nodata filled, mask kept), for
+    // queries such as the Walk navigation mode's ground height. Shared so
+    // that a background rebuild can swap it in cheaply.
+    struct GroundSampler {
+        double C = 0, F = 0, A = 1, E = -1; // pixel-centre affine (north-up)
+        int w = 0, h = 0;
+        std::vector<float> elev; // nodata filled with the nearest valid value
+        std::vector<uint8_t> nodata;
+        // Elevation (bilinear) at world (x, y); false outside the DEM or on nodata.
+        bool at(double x, double y, double& z) const;
+    };
+    std::shared_ptr<const GroundSampler> ground;
 
     SceneFrame frame;
     glm::dvec3 bboxMin{0.0}, bboxMax{0.0};

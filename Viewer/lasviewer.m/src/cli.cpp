@@ -52,6 +52,7 @@ void printUsage(const char* prog, std::ostream& out) {
         << "  --snapshot <f.ppm> save a frame once loading has settled, then quit\n"
         << "  --dem-lod angle,level  DEM collapse angle (degrees, default 1) and maximum\n"
         << "                     quadtree level (default 5) at load\n"
+        << "  --nav orbit|fly|walk  navigation mode to start in (default orbit; keys 1/2/3)\n"
         << "  --view x,y,z,d,yaw,pitch\n"
         << "                     start looking at world point x,y,z (scene CRS) from d\n"
         << "                     meters away; yaw and pitch in degrees\n"
@@ -109,6 +110,20 @@ CliStatus parseCommandLine(int argc, const char* const* argv, CommandLine& cmd,
             }
             plan.demAngle = lod[0];
             plan.demMaxLevel = static_cast<int>(lod[1]);
+        } else if (arg == "--nav") {
+            const char* v = needValue();
+            if (!v) return CliStatus::Error;
+            std::string m = v;
+            if (m == "orbit")
+                cmd.nav = NavMode::Orbit;
+            else if (m == "fly")
+                cmd.nav = NavMode::Fly;
+            else if (m == "walk")
+                cmd.nav = NavMode::Walk;
+            else {
+                err << "ERROR: --nav needs orbit, fly or walk\n";
+                return CliStatus::Error;
+            }
         } else if (arg == "--view") {
             const char* v = needValue();
             if (!v) return CliStatus::Error;

@@ -65,7 +65,7 @@ ATF_TEST_CASE_BODY(test_help_and_errors) {
     r = parse({"--frobnicate", "a.laz"});
     CHECK(r.status == CliStatus::Error && mentions(r.err, "unknown option --frobnicate"));
     for (const char* opt : {"-o", "-d", "-dtm", "-mnt", "-dhm", "-mnh", "-dsm", "-mns", "-cop",
-                            "--dem-lod", "--view", "--snapshot"}) {
+                            "--dem-lod", "--view", "--snapshot", "--nav"}) {
         r = parse({"a.laz", opt});
         CHECK(r.status == CliStatus::Error && mentions(r.err, "needs a value"));
     }
@@ -135,10 +135,21 @@ ATF_TEST_CASE_BODY(test_dem_lod_and_view) {
     }
 }
 
+ATF_TEST_CASE_WITHOUT_HEAD(test_nav_mode);
+ATF_TEST_CASE_BODY(test_nav_mode) {
+    CHECK(parse({"a.laz"}).cmd.nav == NavMode::Orbit);
+    CHECK(parse({"--nav", "fly", "a.laz"}).cmd.nav == NavMode::Fly);
+    CHECK(parse({"--nav", "walk", "a.laz"}).cmd.nav == NavMode::Walk);
+    CHECK(parse({"--nav", "orbit", "a.laz"}).cmd.nav == NavMode::Orbit);
+    Result r = parse({"--nav", "swim", "a.laz"});
+    CHECK(r.status == CliStatus::Error && mentions(r.err, "--nav needs"));
+}
+
 ATF_INIT_TEST_CASES(tcs) {
     ATF_ADD_TEST_CASE(tcs, test_help_and_errors);
     ATF_ADD_TEST_CASE(tcs, test_point_clouds);
     ATF_ADD_TEST_CASE(tcs, test_tiff_classified_by_content);
     ATF_ADD_TEST_CASE(tcs, test_height_models);
     ATF_ADD_TEST_CASE(tcs, test_dem_lod_and_view);
+    ATF_ADD_TEST_CASE(tcs, test_nav_mode);
 }

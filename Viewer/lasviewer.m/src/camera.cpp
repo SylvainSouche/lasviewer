@@ -41,7 +41,7 @@ glm::vec3 Camera::unproject(float ndcX, float ndcY, float ndcZ) const {
 }
 
 void computeNearFar(const Camera& cam, const glm::vec3& bboxMin, const glm::vec3& bboxMax,
-                    float zScale, float& nearP, float& farP) {
+                    float zScale, float& nearP, float& farP, float minNear) {
     glm::mat4 V = cam.view();
     glm::vec4 corners[8] = {
         {bboxMin.x, bboxMin.y * zScale, bboxMin.z, 1},
@@ -68,9 +68,9 @@ void computeNearFar(const Camera& cam, const glm::vec3& bboxMin, const glm::vec3
     if (frontCount < 8) {
         // Camera is inside (or intersecting) the bbox.
         float camDist = glm::length(cam.position() - cam.target);
-        nearP = std::max(0.001f, camDist * 0.005f);
+        nearP = std::max(minNear, camDist * 0.005f);
     } else {
-        nearP = std::max(0.001f, minDist * 0.9f);
+        nearP = std::max(minNear, minDist * 0.9f);
     }
     farP = maxDist * 1.5f + 0.01f;
 }

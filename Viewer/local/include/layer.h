@@ -41,6 +41,9 @@ struct RenderContext {
     const ViewSettings* settings = nullptr;
     const Programs* programs = nullptr;
     const HiZ* hiz = nullptr; // last frame's depth pyramid; may be not ready
+    // Elevation range (GL-space Y, unscaled) of all the scene's DEM layers:
+    // their shared colour ramp. Empty (min >= max) without DEMs.
+    float demRampMin = 0.0f, demRampMax = 0.0f;
 };
 
 // Keyboard-driven actions a layer may respond to.

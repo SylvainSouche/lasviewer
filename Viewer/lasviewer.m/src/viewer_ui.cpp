@@ -11,12 +11,23 @@
 namespace {
 
 const char* kHelpRows[][2] = {
+    {"1 / 2 / 3", "Navigation: Orbit (GIS/CAD) / Fly / Walk"},
+    {"Orbit:", ""},
     {"Left drag", "Orbit"},
     {"Shift + left drag", "Look around (eye fixed)"},
     {"Right / middle drag", "Pan"},
     {"Wheel", "Move forward / back"},
     {"Double-click", "Focus on the point under the cursor"},
     {"Arrows", "Move; Shift+Up/Down = forward/back"},
+    {"Fly:", "the viewpoint keeps moving forward"},
+    {"Up / Down, wheel", "Faster / slower"},
+    {"Space", "Stop"},
+    {"Hold left button", "Steer toward the cursor (like a stick)"},
+    {"Walk:", "eye 2 m above the terrain model"},
+    {"Up / Down", "Walk forward / back (Shift: run)"},
+    {"Left / Right", "Step aside"},
+    {"Left drag", "Turn the head"},
+    {"All modes:", ""},
     {"R", "Reset view"},
     {"T / V", "Top / side view"},
     {"P", "Perspective / orthographic"},
@@ -35,6 +46,7 @@ const char* kHelpRows[][2] = {
 } // namespace
 
 void ViewerApp::drawUI() {
+    drawNavHud();
     if (ui_.showPanel) drawMainPanel();
     if (ui_.showLog) drawLogWindow();
     if (ui_.showHelp) drawHelpWindow();
@@ -86,16 +98,39 @@ void ViewerApp::drawMainPanel() {
     }
 
     if (ImGui::CollapsingHeader("View", ImGuiTreeNodeFlags_DefaultOpen)) {
+        int nav = static_cast<int>(controller_.mode());
+        ImGui::TextUnformatted("Navigation");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Orbit", &nav, 0)) setNavMode(NavMode::Orbit);
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Fly", &nav, 1)) setNavMode(NavMode::Fly);
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Walk", &nav, 2)) setNavMode(NavMode::Walk);
+        if (controller_.mode() == NavMode::Fly) {
+            ImGui::Text("Speed %.1f m/s", controller_.flySpeed());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Stop")) controller_.flyStop();
+            ImGui::SameLine();
+            ImGui::Checkbox("Invert pitch", &controller_.invertFlyPitch);
+        } else if (controller_.mode() == NavMode::Walk) {
+            float h = static_cast<float>(controller_.walkEyeHeight);
+            ImGui::SetNextItemWidth(160);
+            if (ImGui::SliderFloat("Eye height", &h, 0.5f, 20.0f, "%.1f m"))
+                controller_.walkEyeHeight = h;
+        }
+
         if (ImGui::Button("Reset")) resetView();
-        ImGui::SameLine();
-        if (ImGui::Button("Top")) controller_.topView();
-        ImGui::SameLine();
-        if (ImGui::Button("Side")) controller_.sideView();
-        ImGui::SameLine();
-        int proj = camera_.ortho ? 1 : 0;
-        if (ImGui::RadioButton("Persp", &proj, 0)) camera_.ortho = false;
-        ImGui::SameLine();
-        if (ImGui::RadioButton("Ortho", &proj, 1)) camera_.ortho = true;
+        if (controller_.mode() == NavMode::Orbit) {
+            ImGui::SameLine();
+            if (ImGui::Button("Top")) controller_.topView();
+            ImGui::SameLine();
+            if (ImGui::Button("Side")) controller_.sideView();
+            ImGui::SameLine();
+            int proj = camera_.ortho ? 1 : 0;
+            if (ImGui::RadioButton("Persp", &proj, 0)) camera_.ortho = false;
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Ortho", &proj, 1)) camera_.ortho = true;
+        }
 
         ImGui::SetNextItemWidth(160);
         ImGui::SliderFloat("Z exaggeration", &settings_.zScale, 0.1f, 20.0f, "%.2fx",
@@ -203,4 +238,105 @@ void ViewerApp::drawHelpWindow() {
         ImGui::EndTable();
     }
     ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
+// Navigation HUD: which mode, and what the input does, while the viewpoint is
+// being manipulated. Orbit shows it only then (and fades it out); Fly and Walk
+// always show it, brighter while steering or walking.
+// ---------------------------------------------------------------------------
+
+void ViewerApp::drawNavHud() {
+    const NavMode mode = controller_.mode();
+    const double idle = lastNavInput_ < 0.0 ? 1e9 : glfwGetTime() - lastNavInput_;
+    float alpha;
+    if (mode == NavMode::Orbit) {
+        if (idle > 2.0) return;
+        alpha = idle < 1.0 ? 1.0f : static_cast<float>(2.0 - idle); // fade out
+    } else {
+        alpha = idle < 1.0 ? 1.0f : 0.55f;
+    }
+
+    static const ImVec4 kColor[] = {{0.35f, 0.65f, 1.0f, 1.0f}, // Orbit: blue
+                                    {1.0f, 0.62f, 0.2f, 1.0f},  // Fly: orange
+                                    {0.4f, 0.85f, 0.4f, 1.0f}}; // Walk: green
+    const ImVec4 color = kColor[static_cast<int>(mode)];
+    const ImU32 colorU32 = ImGui::GetColorU32(ImVec4(color.x, color.y, color.z, alpha));
+
+    // Height above the terrain, when there is terrain under the eye.
+    glm::dvec3 eye = controller_.eyeWorld(settings_.zScale);
+    double groundZ = 0.0;
+    bool hasGround = mode != NavMode::Orbit && groundAt(eye.x, eye.y, groundZ);
+
+    char title[64], detail[128], hint[160];
+    switch (mode) {
+    case NavMode::Orbit:
+        std::snprintf(title, sizeof title, "ORBIT");
+        std::snprintf(detail, sizeof detail, "GIS / CAD view");
+        std::snprintf(hint, sizeof hint,
+                      "drag: orbit   shift+drag: look   right drag: pan   "
+                      "wheel: forward   2: fly   3: walk");
+        break;
+    case NavMode::Fly:
+        std::snprintf(title, sizeof title, "FLY");
+        if (hasGround)
+            std::snprintf(detail, sizeof detail, "%.1f m/s   %.0f m above ground",
+                          controller_.flySpeed(), eye.z - groundZ);
+        else
+            std::snprintf(detail, sizeof detail, "%.1f m/s", controller_.flySpeed());
+        std::snprintf(hint, sizeof hint,
+                      "up/down: speed   space: stop   hold left button: "
+                      "steer   1: orbit   3: walk");
+        break;
+    case NavMode::Walk:
+        std::snprintf(title, sizeof title, "WALK");
+        if (controller_.walkOnGround())
+            std::snprintf(detail, sizeof detail, "eye %.1f m above the terrain",
+                          controller_.walkEyeHeight);
+        else
+            std::snprintf(detail, sizeof detail, "no terrain model here: constant height");
+        std::snprintf(hint, sizeof hint,
+                      "up/down: walk (shift: run)   left/right: step aside   "
+                      "drag: look   1: orbit   2: fly");
+        break;
+    }
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(
+        ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y - 16.0f),
+        ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.55f * alpha);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 2.0f);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(color.x, color.y, color.z, alpha));
+    ImGui::Begin("##navhud", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+    ImGui::SetWindowFontScale(1.5f);
+    ImGui::TextColored(ImVec4(color.x, color.y, color.z, alpha), "%s", title);
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(1, 1, 1, alpha), "  %s", detail);
+    ImGui::TextColored(ImVec4(0.75f, 0.75f, 0.75f, alpha), "%s", hint);
+    ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+
+    // Reticles, over the 3D view (behind the UI windows).
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    ImVec2 c(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + vp->Size.y * 0.5f);
+    if (mode == NavMode::Fly) {
+        float r = std::min(vp->Size.x, vp->Size.y) * 0.5f * 0.05f; // the stick's dead zone
+        dl->AddCircle(c, r, colorU32, 32, 1.5f);
+        dl->AddLine(ImVec2(c.x - 2.5f * r, c.y), ImVec2(c.x - r, c.y), colorU32, 1.5f);
+        dl->AddLine(ImVec2(c.x + r, c.y), ImVec2(c.x + 2.5f * r, c.y), colorU32, 1.5f);
+        if (controller_.anyButtonDown()) { // steering: the stick
+            ImVec2 m = ImGui::GetIO().MousePos;
+            dl->AddLine(c, m, colorU32, 2.0f);
+            dl->AddCircleFilled(m, 4.0f, colorU32);
+        }
+    } else if (mode == NavMode::Walk) {
+        dl->AddLine(ImVec2(c.x - 8, c.y), ImVec2(c.x + 8, c.y), colorU32, 1.5f);
+        dl->AddLine(ImVec2(c.x, c.y - 8), ImVec2(c.x, c.y + 8), colorU32, 1.5f);
+    }
 }
