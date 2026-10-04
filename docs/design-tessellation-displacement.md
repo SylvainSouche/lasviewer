@@ -1814,6 +1814,10 @@ The `Makefile`/`main.cpp` currently request GL 3.3 core explicitly
   discrete levels selected by rough camera-distance bucket, still shared
   identically by both sides of a constrained edge) if a single constant
   proves too coarse a compromise.
+  **Resolved (2026-10-04):** transition levels are now view-dependent and
+  continuous: K = ceil(free level of the coarse edge / 2), computed by both
+  sides from the coarse edge's endpoints (the fine side gets the far one as
+  a vertex attribute). See specs.md §9 and shaders.cpp kMeshTessControl.
 - Real seam behavior under camera motion at UNCONSTRAINED (same-level)
   edges — the deterministic-edge-factor technique is standard and the
   math checks out, but should still be visually confirmed against this

@@ -6,6 +6,7 @@
 #include <atf-c++.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -155,8 +156,10 @@ ATF_TEST_CASE_BODY(test_balance_one_level_everywhere) {
 }
 
 // Edge codes agree across every edge: same level → 0 on both sides; one
-// level apart → 2 on the coarse side, 1 on the fine side. With the TCS rule
-// (coarse 2K segments, fine K per half edge) the vertices then coincide.
+// level apart → 2 on the coarse side, 1 or 3 on the fine side, whose far
+// point and shared corner are exactly the coarse edge's two ends. With the
+// TCS rule (coarse 2K segments, fine K per half edge, K from the coarse
+// edge on both sides) the vertices then coincide.
 ATF_TEST_CASE_WITHOUT_HEAD(test_edge_codes_agree);
 ATF_TEST_CASE_BODY(test_edge_codes_agree) {
     Raster r(513, 513, [](int c, int) { return 0.01 * c; });
@@ -166,19 +169,39 @@ ATF_TEST_CASE_BODY(test_edge_codes_agree) {
     auto leaves = buildLeaves(r.grid(), coarse, maxLevel, 1.0, 1.0, 1.0, 64.0);
     balanceLeaves(leaves, coarse, maxLevel, 64.0, 64.0);
     LeafIndex index(leaves, coarse, maxLevel);
-    // Map each finest cell to its leaf's (level, codes).
+    // Map each finest cell to its leaf's (level, codes, far points).
     int n = coarse << maxLevel;
     std::vector<const QuadCell*> owner(static_cast<size_t>(n) * n, nullptr);
     std::map<const QuadCell*, std::vector<float>> codes;
+    std::map<const QuadCell*, std::vector<std::pair<int, int>>> fars;
     for (const QuadCell& c : leaves) {
         float e[4];
-        edgeCodes(c, index, maxLevel, e);
+        int far[4][2] = {};
+        edgeCodes(c, index, maxLevel, e, far);
         codes[&c] = {e[0], e[1], e[2], e[3]};
+        for (const auto& f : far) fars[&c].emplace_back(f[0], f[1]);
         int s = 1 << (maxLevel - c.level);
         for (int y = c.iy * s; y < (c.iy + 1) * s; ++y)
             for (int x = c.ix * s; x < (c.ix + 1) * s; ++x)
                 owner[static_cast<size_t>(y) * n + x] = &c;
     }
+    auto corner = [&](const QuadCell* c, int k) {
+        int fx, fy;
+        cellCorner(*c, k, maxLevel, fx, fy);
+        return std::make_pair(fx, fy);
+    };
+    // The fine cell's edge on `side` (corners side → side+1) against the
+    // coarse cell's edge on `coarseSide`: shared corner + far = its ends.
+    auto checkFine = [&](const QuadCell* fine, int side, const QuadCell* coarseCell,
+                         int coarseSide) {
+        float code = codes[fine][side];
+        CHECK(code == 1.0f || code == 3.0f);
+        auto shared = code == 1.0f ? corner(fine, side) : corner(fine, (side + 1) % 4);
+        std::set<std::pair<int, int>> got{shared, fars[fine][side]};
+        std::set<std::pair<int, int>> want{corner(coarseCell, coarseSide),
+                                           corner(coarseCell, (coarseSide + 1) % 4)};
+        CHECK(got == want);
+    };
     int transitions = 0;
     for (int y = 0; y < n; ++y)
         for (int x = 0; x + 1 < n; ++x) {
@@ -189,10 +212,12 @@ ATF_TEST_CASE_BODY(test_edge_codes_agree) {
             if (a->level == b->level)
                 CHECK(ca == 0.0f && cb == 0.0f);
             else if (a->level < b->level) {
-                CHECK(ca == 2.0f && cb == 1.0f);
+                CHECK(ca == 2.0f);
+                checkFine(b, 3, a, 1);
                 ++transitions;
             } else {
-                CHECK(ca == 1.0f && cb == 2.0f);
+                CHECK(cb == 2.0f);
+                checkFine(a, 1, b, 3);
                 ++transitions;
             }
         }
@@ -286,7 +311,25 @@ ATF_TEST_CASE_BODY(test_mesh_build) {
     }
     CHECK(std::abs(minU - 0.5f / W) < 1e-6f);
     CHECK(std::abs(maxU - (W - 0.5f) / W) < 1e-6f);
-    for (float c : mesh.patchEdgeConstraint) CHECK(c == 0.0f || c == 1.0f || c == 2.0f);
+    for (float c : mesh.patchEdgeConstraint)
+        CHECK(c == 0.0f || c == 1.0f || c == 2.0f || c == 3.0f);
+    // A fine side's far point is, bit for bit, a corner of some patch (the
+    // coarse neighbour's): the TCS computes the same K on both sides.
+    CHECK(mesh.patchEdgeFar.size() == static_cast<size_t>(mesh.patchCount) * 20);
+    std::set<std::array<float, 5>> corners;
+    for (size_t v = 0; v < mesh.patchPositions.size() / 3; ++v)
+        corners.insert({mesh.patchPositions[3 * v], mesh.patchPositions[3 * v + 1],
+                        mesh.patchPositions[3 * v + 2], mesh.patchHeightUVs[2 * v],
+                        mesh.patchHeightUVs[2 * v + 1]});
+    int fineSides = 0;
+    for (size_t v = 0; v < mesh.patchPositions.size() / 3; ++v) {
+        float code = mesh.patchEdgeConstraint[4 * v + v % 4]; // edge starting at corner v%4
+        if (code != 1.0f && code != 3.0f) continue;
+        const float* f = &mesh.patchEdgeFar[5 * v];
+        CHECK(corners.count({f[0], f[1], f[2], f[3], f[4]}) == 1);
+        ++fineSides;
+    }
+    CHECK(fineSides > 0);
 }
 
 // Nodata takes the nearest valid value; valid pixels are untouched.
@@ -306,7 +349,18 @@ ATF_TEST_CASE_BODY(test_fill_nodata_nearest) {
     CHECK(none[0] == -9999.0f);
 }
 
+// The depth at which cells fit kMaxTessSegments pixels: a 20000-pixel DEM
+// (8 level-0 cells of ~2500 px) needs level 6, a 2000-pixel one level 2.
+ATF_TEST_CASE_WITHOUT_HEAD(test_level_for_span);
+ATF_TEST_CASE_BODY(test_level_for_span) {
+    CHECK(levelForSpan(19999.0 / 8, 19999.0 / 8, 64.0) == 6);
+    CHECK(levelForSpan(1999.0 / 8, 1999.0 / 8, 64.0) == 2);
+    CHECK(levelForSpan(64.0, 10.0, 64.0) == 0);
+    CHECK(levelForSpan(10.0, 64.5, 64.0) == 1);
+}
+
 ATF_INIT_TEST_CASES(tcs) {
+    ATF_ADD_TEST_CASE(tcs, test_level_for_span);
     ATF_ADD_TEST_CASE(tcs, test_fill_nodata_nearest);
     ATF_ADD_TEST_CASE(tcs, test_deviation_plane_is_zero);
     ATF_ADD_TEST_CASE(tcs, test_deviation_finds_hidden_pixel);
