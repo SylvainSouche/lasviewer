@@ -18,7 +18,7 @@ A lightweight C++ viewer for **LAZ/LAS/COPC point clouds** and **GeoTIFF DEMs**,
 - **DEM/DSM terrain**: an adaptive quadtree of GPU-tessellated patches (coarse where the terrain is smooth, refined on screen down to one vertex per DEM pixel, crack-free), every vertex on the DEM, textured by the orthophoto, with optional hill-shading. Supports any raster GDAL reads (Float/Int elevation, IGN Terrain-RGB), with its declared nodata value.
 - **Terrain + what stands on it** (IGN LiDAR HD MNT + MNH, or MNT + MNS): the height model is drawn semi-transparent over the terrain, only where it rises above a height threshold (live slider, 0.5 m by default). The terrain underneath is left without orthophoto (neutral grey), since the image there shows the top of the building or tree.
 - **GPU depth subsampling**: gives an even screen-space point density.
-- **Navigation**: orbit, look-around, pan, fly, and double-click to focus. Perspective and orthographic projections, Z exaggeration.
+- **Navigation**: three modes — orbit (GIS/CAD: orbit, look-around, pan, double-click to focus, perspective or orthographic), fly (continuous flight steered like a flight simulator) and walk (2 m above the terrain model) — with an on-screen badge showing the active mode. Z exaggeration.
 - **One CRS per scene**: taken from the first input that declares one (point clouds first). Orthophotos and DEMs in another CRS are warped into it on load (GDAL, bilinear). Point clouds aren't reprojected; one in another CRS is reported.
 
 ---
@@ -87,9 +87,25 @@ On the command line, `.tif` files are sorted by content: 8-bit RGB(A) imagery is
 
 ## Controls
 
-The side panel (toggle with **Tab**) holds the layer list and view settings. The keyboard shortcuts follow your keyboard layout (AZERTY, QWERTZ, and so on):
+The side panel (toggle with **Tab**) holds the layer list and view settings. The keyboard shortcuts follow your keyboard layout (AZERTY, QWERTZ, and so on).
 
-| Input | Action |
+Three navigation modes, chosen in the View panel or with `1` / `2` / `3`: **Orbit** (GIS/CAD, below), **Fly** and **Walk**. A badge at the bottom of the view shows the mode while you move (blue, orange, green).
+
+| Fly | |
+|-----|--------|
+| *(automatic)* | The viewpoint keeps moving forward |
+| **Up / Down**, wheel | Faster / slower (×1.5) |
+| **Space** | Stop |
+| **Hold left button** | Steer toward the cursor, like a flight-simulator stick (cursor above the centre climbs; *Invert pitch* in the panel) |
+
+| Walk | |
+|-----|--------|
+| *(automatic)* | Eye 2 m above the terrain model (adjustable) |
+| **Up / Down** | Walk forward / back (Shift: run) |
+| **Left / Right** | Step aside |
+| **Left drag** | Turn the head |
+
+| Orbit, and all modes | Action |
 |-----|--------|
 | **Left drag** | Orbit |
 | **Shift + left drag** | Look around (eye fixed) |

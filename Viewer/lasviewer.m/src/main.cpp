@@ -28,6 +28,7 @@ int main(int argc, char** argv) {
     if (cmd.viewSet)
         app.setInitialView(glm::dvec3(cmd.view[0], cmd.view[1], cmd.view[2]), cmd.view[3],
                            cmd.view[4], cmd.view[5]);
+    app.setInitialNavMode(cmd.nav);
     if (!app.init(cmd.plan)) return 1;
     app.run();
     return 0;

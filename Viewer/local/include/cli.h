@@ -1,5 +1,6 @@
 // cli.h — lasviewer's command line: what to load, and how to start.
 #pragma once
+#include "camera_controller.h"
 #include "scene.h"
 
 #include <ostream>
@@ -12,6 +13,7 @@ struct CommandLine {
     std::string snapshot; // --snapshot: save a frame once loaded, then quit
     bool viewSet = false; // --view x,y,z,distance,yaw,pitch
     double view[6] = {};
+    NavMode nav = NavMode::Orbit; // --nav orbit|fly|walk
 };
 
 enum class CliStatus {

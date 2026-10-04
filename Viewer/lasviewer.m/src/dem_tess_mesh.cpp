@@ -344,6 +344,17 @@ bool DEMTessMesh::loadFromDEM(const DemSource& source, const Orthophoto* ortho,
     }
     auxData = std::move(data.aux);
 
+    auto sampler = std::make_shared<GroundSampler>();
+    sampler->C = geo.C;
+    sampler->F = geo.F;
+    sampler->A = geo.A;
+    sampler->E = geo.E;
+    sampler->w = static_cast<int>(w);
+    sampler->h = static_cast<int>(h);
+    sampler->elev = std::move(filled);
+    sampler->nodata = std::move(nodataMask);
+    ground = std::move(sampler);
+
     // GL-space bbox from patch corners (displacement can locally exceed it;
     // good enough for near/far and framing).
     float mnx = 1e30f, mxx = -1e30f, mny = 1e30f, mxy = -1e30f, mnz = 1e30f, mxz = -1e30f;
@@ -788,6 +799,7 @@ bool DEMTessMesh::pollBackgroundBuild(const Orthophoto* ortho) {
             heightmapSrcH = pending->heightmapSrcH;
             demPixelW = pending->demPixelW;
             demPixelH = pending->demPixelH;
+            ground = std::move(pending->ground);
             frame = pending->frame;
             bboxMin = pending->bboxMin;
             bboxMax = pending->bboxMax;
@@ -812,4 +824,20 @@ bool DEMTessMesh::pollBackgroundBuild(const Orthophoto* ortho) {
                                 bgPendingMaxLevel_);
     }
     return swapped;
+}
+
+bool DEMTessMesh::GroundSampler::at(double x, double y, double& z) const {
+    if (w < 2 || h < 2 || A == 0.0 || E == 0.0) return false;
+    double col = (x - C) / A, row = (y - F) / E;
+    if (col < 0.0 || row < 0.0 || col > w - 1 || row > h - 1) return false;
+    int nc = static_cast<int>(std::lround(col)), nr = static_cast<int>(std::lround(row));
+    if (nodata[static_cast<size_t>(nr) * w + nc]) return false;
+    int c0 = std::min(static_cast<int>(col), w - 2), r0 = std::min(static_cast<int>(row), h - 2);
+    double fx = col - c0, fy = row - r0;
+    auto e = [&](int c, int r) {
+        return static_cast<double>(elev[static_cast<size_t>(r) * w + c]);
+    };
+    z = e(c0, r0) * (1 - fx) * (1 - fy) + e(c0 + 1, r0) * fx * (1 - fy) +
+        e(c0, r0 + 1) * (1 - fx) * fy + e(c0 + 1, r0 + 1) * fx * fy;
+    return true;
 }
