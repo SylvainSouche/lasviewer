@@ -143,7 +143,7 @@ bool Scene::load(const LoadPlan& plan, const Programs& programs,
     // --- 3. Extents in the scene CRS → shared frame. ---
     WorldBounds all;
     for (const CloudInput& c : clouds) {
-        if (!c.header.wkt.empty() && !sameHorizontalCRS(c.header.wkt, sceneWkt)) {
+        if (!c.header.wkt.empty() && !sameHorizontalCRS(c.header.wkt, sceneWkt, &c.header.bounds)) {
             std::cerr << "WARNING: " << c.path << " is in another CRS"
                       << (c.header.epsg ? " (EPSG:" + std::to_string(c.header.epsg) + ")" : "")
                       << "; point clouds are not reprojected, it will be misplaced" << std::endl;
@@ -153,7 +153,8 @@ bool Scene::load(const LoadPlan& plan, const Programs& programs,
         all.extendZ(b.min.z, b.max.z);
     }
     for (DemInput& d : dems) {
-        if (!d.info.wkt.empty() && !sceneWkt.empty() && !sameHorizontalCRS(d.info.wkt, sceneWkt)) {
+        if (!d.info.wkt.empty() && !sceneWkt.empty() &&
+            !sameHorizontalCRS(d.info.wkt, sceneWkt, &d.bounds)) {
             if (!transformExtent(d.bounds, d.info.wkt, sceneWkt)) {
                 std::cerr << "WARNING: cannot transform the extent of " << d.path
                           << " into the scene CRS" << std::endl;
@@ -165,7 +166,8 @@ bool Scene::load(const LoadPlan& plan, const Programs& programs,
     // overlap most. Not added to the frame: only their overlap with the
     // ground is drawn.
     for (DemInput& a : above) {
-        if (!a.info.wkt.empty() && !sceneWkt.empty() && !sameHorizontalCRS(a.info.wkt, sceneWkt))
+        if (!a.info.wkt.empty() && !sceneWkt.empty() &&
+            !sameHorizontalCRS(a.info.wkt, sceneWkt, &a.bounds))
             transformExtent(a.bounds, a.info.wkt, sceneWkt);
         double best = 0.0;
         for (size_t i = 0; i < dems.size(); ++i) {
@@ -207,7 +209,8 @@ bool Scene::load(const LoadPlan& plan, const Programs& programs,
             std::cerr << "[ortho] not georeferenced — cannot color " << c.path << std::endl;
             return nullptr;
         }
-        if (!c.header.wkt.empty() && !sameHorizontalCRS(c.header.wkt, sceneWkt)) return nullptr;
+        if (!c.header.wkt.empty() && !sameHorizontalCRS(c.header.wkt, sceneWkt, &c.header.bounds))
+            return nullptr;
         double cov = orthoCoverage(*ortho, c.header.bounds);
         std::cerr << "[ortho] covers " << cov * 100.0 << "% of " << c.path << std::endl;
         if (cov < kMinOrthoCoverage) {
